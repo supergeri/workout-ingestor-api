@@ -14,6 +14,7 @@ class Exercise(BaseModel):
     distance_m: Optional[int] = None
     distance_range: Optional[str] = None
     type: str = "strength"
+    notes: Optional[str] = None
 
 
 class Superset(BaseModel):

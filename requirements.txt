@@ -7,3 +7,20 @@ fit-tool==0.9.13
 python-multipart>=0.0.9
 numpy>=1.24.0
 pytest>=7.4.0
+
+# Optional: YouTube pipeline dependencies
+# For ASR (Automatic Speech Recognition):
+# openai-whisper>=20231117  # Local Whisper
+# whisperx>=3.1.1  # WhisperX with better alignment
+
+# For scene detection:
+# scenedetect[opencv]>=0.6.2  # PySceneDetect for keyframe extraction
+# opencv-python>=4.8.0  # OpenCV for text region detection
+
+# For LLM structuring:
+# openai>=1.0.0  # OpenAI API
+# anthropic>=0.7.0  # Anthropic Claude API
+
+# For enhanced OCR (optional):
+# paddlepaddle>=2.5.0  # PaddleOCR backend
+# paddleocr>=2.7.0  # PaddleOCR
