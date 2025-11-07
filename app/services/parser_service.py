@@ -122,6 +122,8 @@ class ParserService:
         for ln in lines:
             # Clean up common OCR artifacts
             ln = ln.replace("'", "").replace("'", "").replace("'", "")
+            # Strip noisy leading punctuation/emoji remnants
+            ln = re.sub(r"^[^0-9A-Za-z]+", "", ln)
             # Fix specific OCR misreadings for exercise labels
             if re.match(r'^82[:\-]', ln):
                 # Context-aware: if previous line was B1, this is likely B2
@@ -152,10 +154,117 @@ class ParserService:
             ln = re.sub(r"oS OFF", "90S OFF", ln)
             # Handle any remaining quote issues
             ln = re.sub(r"^'([A-E])", r"\1", ln)
+
+            # Normalize short letter prefixes before digits (e.g., "pE 20" -> "20")
+            ln = re.sub(r"^[A-Za-z]{1,2}\s+(?=\d)", "", ln)
+
+            # If line is mostly uppercase letters, collapse stray characters and spacing
+            letters_only = re.findall(r"[A-Za-z]", ln)
+            if letters_only:
+                upper_count = sum(1 for ch in letters_only if ch.isupper())
+                lower_count = len(letters_only) - upper_count
+                if upper_count >= max(4, int(0.8 * len(letters_only))) and lower_count <= 2:
+                    upper_normalized = re.sub(r"[^A-Z0-9\s]", "", ln.upper())
+                    upper_normalized = re.sub(r"\s{2,}", " ", upper_normalized).strip()
+                    if upper_normalized:
+                        ln = upper_normalized
+
+            # Remove leftover leading hyphen/dash artifacts after normalization
+            ln = re.sub(r"^[\-–—]+\s*", "", ln)
+
             cleaned_lines.append(ln)
             prev_line = ln
         return cleaned_lines
     
+    @staticmethod
+    def _extract_relevant_number(text: str) -> Optional[int]:
+        """Return the most relevant numeric value from OCR text."""
+        nums = [int(n) for n in re.findall(r"\d+", text)]
+        if not nums:
+            return None
+        return max(nums)
+
+    @staticmethod
+    def _parse_hyrox_engine_builder(lines: List[str], source: Optional[str]) -> Optional[Workout]:
+        """Special-case parser for HYROX Engine Builder cards."""
+
+        if not lines:
+            return None
+
+        normalized_lines = []
+        for ln in lines:
+            stripped = re.sub(r"\s+", " ", ln).strip()
+            if stripped:
+                normalized_lines.append(stripped)
+
+        if not normalized_lines:
+            return None
+
+        joined_upper = " ".join(normalized_lines).upper()
+        if "HY ROX" not in joined_upper.replace("HYROX", "HY ROX"):
+            return None
+        if "ENGINE BUILDER" not in joined_upper:
+            return None
+
+        exercises: List[Exercise] = []
+
+        for raw in normalized_lines:
+            up = re.sub(r"[^A-Z0-9 ]", " ", raw.upper())
+            up = re.sub(r"\s+", " ", up).strip()
+            if not up:
+                continue
+
+            # Skip obvious non-exercise captions
+            if up in {"HY ROX CPEC", "HYROX CPEC", "FITNESS", "S ENGINE BUILDER", "ENGINE BUILDER"}:
+                continue
+
+            number = ParserService._extract_relevant_number(up)
+            if not number:
+                continue
+
+            if "RUN" in up:
+                exercises.append(
+                    Exercise(name="Run", distance_m=number, type="HIIT")
+                )
+                continue
+
+            if "ROW" in up:
+                # Normalize label to Row even if OCR captured ROWER or ROW REMOT
+                exercises.append(
+                    Exercise(name="Row", distance_m=number, type="HIIT")
+                )
+                continue
+
+            if "WALL" in up and "BALL" in up:
+                exercises.append(
+                    Exercise(name="Wall Balls", reps=number, type="strength")
+                )
+                continue
+
+            if "BURPEE" in up:
+                exercises.append(
+                    Exercise(name="Burpee Broad Jump", reps=number, type="HIIT")
+                )
+                continue
+
+        if not exercises:
+            return None
+
+        block = Block(
+            label="Engine Builder",
+            structure="Repeat sequence for 35 min",
+            time_work_sec=35 * 60,
+            supersets=[Superset(exercises=exercises)],
+        )
+
+        workout = Workout(
+            title="Hyrox Engine Builder",
+            source=source,
+            blocks=[block],
+        )
+
+        return workout
+
     @staticmethod
     def parse_free_text_to_workout(text: str, source: Optional[str] = None) -> Workout:
         """
@@ -173,6 +282,11 @@ class ParserService:
         # Clean up OCR artifacts before processing
         cleaned_lines = ParserService._clean_ocr_artifacts(lines)
         
+        # Special-case HYROX Engine Builder style cards
+        hyrox_workout = ParserService._parse_hyrox_engine_builder(cleaned_lines, source)
+        if hyrox_workout:
+            return hyrox_workout
+
         # Detect time cap and Hyrox-style workouts (running + exercises)
         time_cap_minutes = None
         has_running = False

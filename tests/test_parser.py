@@ -179,3 +179,55 @@ class TestParserService:
         assert "B1: Squat" in cleaned
         assert "B1: Deadlift" in cleaned
 
+    def test_parse_hyrox_engine_builder_card(self):
+        """Ensure HYROX Engine Builder OCR text is parsed into structured superset."""
+        text = """
+        HY ROX CPec
+        Fitness
+        S ENGINE BUILDER
+        ti (ao 2500M RUN
+        - 40 WALL BALLS
+        1 ey, 1500M ROWER =
+        pE 20 BURPEE BJ ee!
+        |" «\\ 40 WALL BALLS . >
+        / wr \\N 1500M ROW remot!
+        """
+
+        workout = ParserService.parse_free_text_to_workout(text, source="https://www.instagram.com/p/DOyajJ9AukY/")
+
+        assert workout.title == "Hyrox Engine Builder"
+        assert workout.source == "https://www.instagram.com/p/DOyajJ9AukY/"
+        assert len(workout.blocks) == 1
+
+        block = workout.blocks[0]
+        assert block.label == "Engine Builder"
+        assert block.structure == "Repeat sequence for 35 min"
+        assert block.time_work_sec == 35 * 60
+        assert not block.exercises
+        assert len(block.supersets) == 1
+
+        superset_exercises = block.supersets[0].exercises
+        assert len(superset_exercises) == 6
+
+        assert superset_exercises[0].name == "Run"
+        assert superset_exercises[0].distance_m == 2500
+        assert superset_exercises[0].type == "HIIT"
+
+        assert superset_exercises[1].name == "Wall Balls"
+        assert superset_exercises[1].reps == 40
+        assert superset_exercises[1].type == "strength"
+
+        assert superset_exercises[2].name == "Row"
+        assert superset_exercises[2].distance_m == 1500
+        assert superset_exercises[2].type == "HIIT"
+
+        assert superset_exercises[3].name == "Burpee Broad Jump"
+        assert superset_exercises[3].reps == 20
+        assert superset_exercises[3].type == "HIIT"
+
+        assert superset_exercises[4].name == "Wall Balls"
+        assert superset_exercises[4].reps == 40
+
+        assert superset_exercises[5].name == "Row"
+        assert superset_exercises[5].distance_m == 1500
+
