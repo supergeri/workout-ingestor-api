@@ -28,6 +28,8 @@ RE_TABATA_CFG = re.compile(
     re.I | re.X
 )
 RE_SKI = re.compile(r"\b(ski\s*erg|skierg|skier)\b", re.I)
+RE_TIME_CAP = re.compile(r"time\s*cap\s*:?\s*(?P<minutes>\d+)\s*min", re.I)
+RE_RUN = re.compile(r"\b(run|running|jog)\b", re.I)
 
 
 class ParserService:
@@ -171,14 +173,37 @@ class ParserService:
         # Clean up OCR artifacts before processing
         cleaned_lines = ParserService._clean_ocr_artifacts(lines)
         
+        # Detect time cap and Hyrox-style workouts (running + exercises)
+        time_cap_minutes = None
+        has_running = False
+        for ln in cleaned_lines:
+            time_cap_match = RE_TIME_CAP.search(ln)
+            if time_cap_match:
+                time_cap_minutes = to_int(time_cap_match.group("minutes"))
+            # Check for running - look for "Run" or "m Run" pattern
+            if RE_RUN.search(ln) and RE_DISTANCE.search(ln):
+                has_running = True
+            # Also check for "m Run" pattern (common in Hyrox workouts)
+            if re.search(r'\d+\s*m\s+run', ln, re.I):
+                has_running = True
+        
         blocks: List[Block] = []
         current = Block(label="Block 1")
         wk_title = None
         current_superset: List[Exercise] = []
         superset_letter = None
+        
+        # If time cap detected, set it on the first block
+        if time_cap_minutes:
+            current.time_work_sec = time_cap_minutes * 60
+            current.structure = f"for time (cap: {time_cap_minutes} min)"
 
         for ln in cleaned_lines:
             if ParserService._is_junk(ln):
+                continue
+            
+            # Skip time cap line (already processed)
+            if RE_TIME_CAP.search(ln):
                 continue
 
             # Title capture
@@ -186,6 +211,15 @@ class ParserService:
                 m_week = RE_WEEK.match(ln)
                 if m_week:
                     wk_title = m_week.group(1).title()
+                    continue
+                # Check for "JOUR" or workout day patterns (Hyrox style)
+                if re.match(r'^JOUR\s*\d+', ln, re.I):
+                    # Look for next line as title (e.g., "HYROX")
+                    wk_title = ln.title()
+                    continue
+                # Check if line looks like a workout type title (HYROX, all caps short words)
+                if len(ln.split()) <= 2 and ln.isupper() and len(ln) <= 15:
+                    wk_title = ln.title()
                     continue
                 if RE_TITLE_HINT.search(ln) and len(ln.split()) <= 6:
                     wk_title = ln.title()
@@ -220,6 +254,10 @@ class ParserService:
                 if re.search(r"metabolic|conditioning", ln, re.I):
                     lbl = "Metabolic Conditioning"
                 current = Block(label=lbl)
+                # Preserve time cap if it was set
+                if time_cap_minutes:
+                    current.time_work_sec = time_cap_minutes * 60
+                    current.structure = f"for time (cap: {time_cap_minutes} min)"
                 superset_letter = None
                 # Inline structure / default reps in header
                 m_struct = RE_ROUNDS_SETS.search(ln)
@@ -317,13 +355,25 @@ class ParserService:
                     m_rx = RE_REPS_PLAIN_X.search(ln)
                     if m_rx:
                         reps = to_int(m_rx.group("reps"))
+                    else:
+                        # Check for number at start of line (e.g., "80 Walking Lunges")
+                        # This handles Hyrox-style workouts where reps come before exercise name
+                        reps_at_start = re.match(r'^(?P<reps>\d+)\s+(?![km]g\b)', ln)
+                        if reps_at_start and not RE_RUN.search(ln):
+                            reps = to_int(reps_at_start.group("reps"))
 
             # Inherit reps_range from header if none on line
             if not reps and not reps_range and not distance_m and not distance_range and current.default_reps_range:
                 reps_range = current.default_reps_range
 
             # Classify exercise type
-            if time_work_sec or rest_sec:
+            # For Hyrox-style workouts (time cap + running), all exercises should be HIIT
+            if time_cap_minutes and has_running:
+                ex_type = "HIIT"
+            # For running exercises, always set type to HIIT
+            elif RE_RUN.search(ln) and (distance_m or distance_range):
+                ex_type = "HIIT"
+            elif time_work_sec or rest_sec:
                 ex_type = "interval"
             else:
                 ex_type = "strength" if (reps or reps_range or distance_m or distance_range) else "interval"
@@ -375,18 +425,32 @@ class ParserService:
                         current_superset.append(exercise)
                 else:
                     # For all other blocks, group all exercises into one superset
-                    if not current_superset:
+                    # For Hyrox-style workouts (time cap + running), group all exercises into one superset
+                    if time_cap_minutes and has_running:
+                        if not current_superset:
+                            current_superset = [exercise]
+                            superset_letter = exercise_letter
+                        else:
+                            current_superset.append(exercise)
+                    elif not current_superset:
                         current_superset = [exercise]
                         superset_letter = exercise_letter
                     else:
                         current_superset.append(exercise)
             else:
-                # Finish current superset if any (unlabeled exercise starts)
-                if current_superset:
-                    current.supersets.append(Superset(exercises=current_superset.copy()))
-                    current_superset.clear()
-                    superset_letter = None
-                current.exercises.append(exercise)
+                # For Hyrox-style workouts (time cap + running), add unlabeled exercises to superset too
+                if time_cap_minutes and has_running:
+                    if not current_superset:
+                        current_superset = [exercise]
+                    else:
+                        current_superset.append(exercise)
+                else:
+                    # Finish current superset if any (unlabeled exercise starts)
+                    if current_superset:
+                        current.supersets.append(Superset(exercises=current_superset.copy()))
+                        current_superset.clear()
+                        superset_letter = None
+                    current.exercises.append(exercise)
 
         # Finish any remaining superset
         if current_superset:
