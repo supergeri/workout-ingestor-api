@@ -22,52 +22,100 @@ class OCRService:
         """
         img = Image.open(io.BytesIO(b))
         
+        # Convert to RGB first if needed (handle RGBA, P mode, etc.)
+        if img.mode != 'RGB':
+            # Create a white background for transparent images
+            if img.mode in ('RGBA', 'LA', 'P'):
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'P':
+                    img = img.convert('RGBA')
+                if img.mode in ('RGBA', 'LA'):
+                    background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                img = background
+            else:
+                img = img.convert('RGB')
+        
         # Convert to grayscale
         img = img.convert("L")
         
-        # Upscale image for better OCR (especially for small text like "Ax", "Az")
+        # Upscale image for better OCR (especially for small text)
         # Scale to at least 300 DPI equivalent (2x-3x scaling helps with small text)
         width, height = img.size
         if width < 2000 or height < 2000:
             # Upscale by factor to ensure minimum dimensions
-            scale_factor = max(2000 / width, 2000 / height, 2.0)
+            scale_factor = max(2000 / width, 2000 / height, 2.5)
             new_width = int(width * scale_factor)
             new_height = int(height * scale_factor)
             img = img.resize((new_width, new_height), Image.LANCZOS)
         
-        # Enhance contrast to improve binarization
+        # Enhance contrast to improve binarization (try multiple levels)
         enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(2.0)  # Increase contrast by 2x
+        # Try multiple contrast levels - higher contrast often helps Instagram images
+        img = enhancer.enhance(2.5)  # Increase contrast
         
-        # Apply slight sharpening to make edges clearer
+        # Enhance sharpness
+        enhancer = ImageEnhance.Sharpness(img)
+        img = enhancer.enhance(2.0)
+        
+        # Apply sharpening filter
         img = img.filter(ImageFilter.SHARPEN)
         
-        # Binarize (threshold) to black and white
-        # Convert to numpy array for thresholding
+        # Try adaptive thresholding if numpy/scipy available, otherwise use fixed threshold
         img_array = np.array(img)
         
-        # Use Otsu's method for automatic thresholding or adaptive threshold
-        # For simplicity, use a fixed threshold - adjust based on typical image brightness
-        threshold = 128  # Middle gray
-        img_array = np.where(img_array > threshold, 255, 0).astype(np.uint8)
+        # Use adaptive thresholding - works better for varying lighting
+        try:
+            from scipy import ndimage
+            # Calculate local mean for adaptive thresholding
+            kernel_size = 35
+            local_mean = ndimage.uniform_filter(img_array.astype(np.float32), size=kernel_size)
+            # Adaptive threshold: pixel is white if > local_mean - 10
+            img_array = np.where(img_array > (local_mean - 10), 255, 0).astype(np.uint8)
+        except ImportError:
+            # Fallback to Otsu-like threshold or fixed threshold
+            # Calculate dynamic threshold based on image statistics
+            mean_brightness = np.mean(img_array)
+            std_brightness = np.std(img_array)
+            threshold = max(128, min(180, mean_brightness - std_brightness * 0.5))
+            img_array = np.where(img_array > threshold, 255, 0).astype(np.uint8)
         
         # Convert back to PIL Image
         img = Image.fromarray(img_array)
         
-        # Use pytesseract with optimized config for better accuracy
-        # --psm 6: Assume a single uniform block of text  
-        # Don't use whitelist - it can cause spacing issues
-        # Instead use PSM 6 which preserves spacing better
-        custom_config = r'--oem 3 --psm 6'
+        # Try multiple OCR configs and pick the best result
+        # Different PSM modes work better for different image layouts
+        configs = [
+            r'--oem 3 --psm 6',  # Uniform block of text
+            r'--oem 3 --psm 11',  # Sparse text (one word per line)
+            r'--oem 3 --psm 12',  # OSD sparse text (with orientation detection)
+            r'--oem 3 --psm 4',   # Single column of text
+            r'--oem 3 --psm 3',   # Fully automatic (default)
+        ]
         
-        try:
-            text = pytesseract.image_to_string(img, config=custom_config)
-            # Post-process: fix common OCR misreadings for exercise labels
-            text = OCRService._post_process_text(text)
-            return text
-        except Exception:
-            # Fallback to default config if custom config fails
-            return pytesseract.image_to_string(img)
+        best_text = ""
+        max_words = 0
+        
+        for config in configs:
+            try:
+                text = pytesseract.image_to_string(img, config=config)
+                # Count words as a simple quality metric
+                word_count = len(text.split())
+                if word_count > max_words:
+                    max_words = word_count
+                    best_text = text
+            except Exception:
+                continue
+        
+        # Fallback to default if all configs fail
+        if not best_text:
+            try:
+                best_text = pytesseract.image_to_string(img)
+            except Exception:
+                return ""
+        
+        # Post-process: fix common OCR misreadings for exercise labels
+        best_text = OCRService._post_process_text(best_text)
+        return best_text
     
     @staticmethod
     def _post_process_text(text: str) -> str:
@@ -117,9 +165,9 @@ class OCRService:
         texts = []
         for img_path in sorted(glob.glob(os.path.join(dir_with_pngs, "frame_*.png"))):
             try:
-                with Image.open(img_path) as im:
-                    im = im.convert("L")
-                    txt = pytesseract.image_to_string(im)
+                with open(img_path, "rb") as f:
+                    image_bytes = f.read()
+                    txt = OCRService.ocr_image_bytes(image_bytes)
                     if txt.strip():
                         texts.append(txt)
             except Exception:
