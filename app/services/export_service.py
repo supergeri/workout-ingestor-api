@@ -135,6 +135,7 @@ class ExportService:
                     parts.append(f"{e.distance_m}m")
                 notes.append(" - " + ", ".join(parts))
         
+        notes_text = "\n".join(notes)
         tcx = f"""<?xml version="1.0" encoding="UTF-8"?>
 <TrainingCenterDatabase xmlns="http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2">
   <Activities>
@@ -145,7 +146,7 @@ class ExportService:
         <DistanceMeters>0</DistanceMeters>
         <Intensity>Active</Intensity>
         <TriggerMethod>Manual</TriggerMethod>
-        <Notes>{esc("\\n".join(notes))}</Notes>
+        <Notes>{esc(notes_text)}</Notes>
       </Lap>
     </Activity>
   </Activities>
