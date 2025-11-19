@@ -22,6 +22,18 @@ try:
 except ImportError:
     INSTALOADER_AVAILABLE = False
 
+# Try to import instagrapi - alternative Instagram API (optional, experimental)
+# Set USE_INSTAGRAPI = False to disable instagrapi and use web scraping only
+USE_INSTAGRAPI = False  # Disabled: instagrapi has Pydantic validation errors with current Instagram API
+try:
+    if USE_INSTAGRAPI:
+        from instagrapi import Client
+        INSTAGRAPI_AVAILABLE = True
+    else:
+        INSTAGRAPI_AVAILABLE = False
+except ImportError:
+    INSTAGRAPI_AVAILABLE = False
+
 
 SHORTCODE_RE = re.compile(r"(?:instagram\.com/(?:p|reel|tv)/|/p/)([A-Za-z0-9_-]+)")
 
@@ -39,6 +51,97 @@ class InstagramService:
         if not match:
             raise InstagramServiceError("Could not extract Instagram shortcode from the provided URL.")
         return match.group(1)
+
+    @staticmethod
+    def download_post_images_instagrapi(
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        url: str = "",
+        target_dir: str = "",
+    ) -> List[str]:
+        """
+        Download images from Instagram post using instagrapi (experimental).
+        
+        Requires instagrapi library and may require credentials for better results.
+        Falls back to no-login method if instagrapi fails.
+        
+        Args:
+            username: Instagram username (optional, but improves quality)
+            password: Instagram password (optional)
+            url: Instagram post URL
+            target_dir: Directory to save downloaded images
+            
+        Returns:
+            List of paths to downloaded image files
+            
+        Raises:
+            InstagramServiceError: If extraction or download fails
+        """
+        if not INSTAGRAPI_AVAILABLE:
+            raise InstagramServiceError(
+                "instagrapi is not installed. Install it with: pip install instagrapi"
+            )
+        
+        os.makedirs(target_dir, exist_ok=True)
+        shortcode = InstagramService._extract_shortcode(url)
+        
+        try:
+            cl = Client()
+            
+            # If credentials provided, login for better access
+            if username and password and username.strip() and password.strip().lower() != "string":
+                try:
+                    cl.login(username, password)
+                except Exception as e:
+                    # If login fails, try without login (public access)
+                    pass
+            
+            # Get media by shortcode
+            media_pk = cl.media_pk_from_url(url)
+            media_info = cl.media_info(media_pk)
+            
+            image_paths = []
+            
+            # Handle single image post
+            if media_info.media_type == 1:  # Photo
+                try:
+                    cl.photo_download(media_pk, folder=target_dir, filename=f"{shortcode}_0.jpg")
+                    # Check for the actual downloaded file (instagrapi may add extension or use different naming)
+                    # Look for any file that starts with the shortcode
+                    for file in os.listdir(target_dir):
+                        if file.startswith(f"{shortcode}_") and file.endswith(('.jpg', '.jpeg', '.png')):
+                            full_path = os.path.join(target_dir, file)
+                            if os.path.exists(full_path) and os.path.getsize(full_path) > 0:
+                                image_paths.append(full_path)
+                except Exception as e:
+                    raise InstagramServiceError(f"Failed to download photo: {e}") from e
+            
+            # Handle album/carousel post
+            elif media_info.media_type == 8:  # Album/Carousel
+                resources = media_info.resources or []
+                for idx, resource in enumerate(resources):
+                    if resource.media_type == 1:  # Photo only
+                        try:
+                            cl.photo_download(resource.pk, folder=target_dir, filename=f"{shortcode}_{idx}.jpg")
+                            # Check for the actual downloaded file
+                            for file in os.listdir(target_dir):
+                                if file.startswith(f"{shortcode}_{idx}") and file.endswith(('.jpg', '.jpeg', '.png')):
+                                    full_path = os.path.join(target_dir, file)
+                                    if os.path.exists(full_path) and os.path.getsize(full_path) > 0 and full_path not in image_paths:
+                                        image_paths.append(full_path)
+                        except Exception as e:
+                            # Log error but continue with other images
+                            continue
+            
+            if not image_paths:
+                raise InstagramServiceError("No images were downloaded via instagrapi.")
+            
+            return image_paths
+                
+        except Exception as e:
+            # Log the full error for debugging
+            error_msg = str(e)
+            raise InstagramServiceError(f"instagrapi download failed: {error_msg}") from e
 
     @staticmethod
     def download_post_images_no_login(url: str, target_dir: str) -> List[str]:
@@ -290,9 +393,35 @@ class InstagramService:
         Returns:
             List of paths to downloaded image files
         """
+        # Try instagrapi first if available (experimental - better image quality)
+        # Only if credentials are provided and valid
+        username_valid = username and username.strip() and username.strip().lower() != "string"
+        password_valid = password and password.strip() and password.strip().lower() != "string"
+        
+        if INSTAGRAPI_AVAILABLE and username_valid and password_valid:
+            try:
+                return InstagramService.download_post_images_instagrapi(
+                    username=username,
+                    password=password,
+                    url=url,
+                    target_dir=target_dir,
+                )
+            except (InstagramServiceError, Exception) as e:
+                # Log the error and fall back to web scraping if instagrapi fails
+                # This allows us to try instagrapi but fall back gracefully
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"instagrapi failed, falling back to web scraping: {e}")
+                # Continue to fallback methods below
+                pass
+        
         # If no credentials provided (None or empty string), use no-login method
-        if not username or not password or username.strip() == "" or password.strip() == "":
+        if not username_valid or not password_valid:
             return InstagramService.download_post_images_no_login(url, target_dir)
+        
+        # If credentials provided but instagrapi failed, try web scraping as fallback
+        # This is safer than trying Instaloader which may also have issues
+        return InstagramService.download_post_images_no_login(url, target_dir)
         
         # Otherwise, use Instaloader (requires login)
         if not INSTALOADER_AVAILABLE:

@@ -27,3 +27,4 @@ instaloader>=4.14.2
 # paddlepaddle>=2.5.0  # PaddleOCR backend
 # paddleocr>=2.7.0  # PaddleOCR
 easyocr>=1.7.0  # EasyOCR - better for social media content (recommended for Instagram)
+# instagrapi>=2.0.0  # Experimental: Optional Instagram API wrapper for higher quality images (uncomment to try)
