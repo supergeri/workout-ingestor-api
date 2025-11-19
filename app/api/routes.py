@@ -294,8 +294,10 @@ async def ingest_instagram_test(payload: InstagramTestRequest):
 
     try:
         try:
-            # Only use login method if both username and password are provided and not empty
-            use_login = payload.username and payload.password and payload.username.strip() and payload.password.strip()
+            # Only use login method if both username and password are provided, not empty, and not placeholder values
+            username_valid = payload.username and payload.username.strip() and payload.username.strip().lower() != "string"
+            password_valid = payload.password and payload.password.strip() and payload.password.strip().lower() != "string"
+            use_login = username_valid and password_valid
             
             if use_login:
                 # Use login method with Instaloader
