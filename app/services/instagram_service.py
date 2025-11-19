@@ -144,7 +144,7 @@ class InstagramService:
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
         
-        # Method 4: Try to find image URLs in script tags with __additionalDataLoaded
+        # Method 4: Extract from __additionalDataLoaded (newer Instagram format)
         additional_data_pattern = r'__additionalDataLoaded\([^,]+,\s*({.*?})\);'
         additional_data_matches = re.findall(additional_data_pattern, html, re.DOTALL)
         for data_str in additional_data_matches:
@@ -167,23 +167,61 @@ class InstagramService:
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
         
-        # Remove duplicates while preserving order
-        seen = set()
+        # Method 5: Extract from require("TimeSliceImpl") pattern (Instagram's React JSON)
+        react_json_pattern = r'require\("TimeSliceImpl"\)[^;]*;([^<]*)'
+        react_matches = re.findall(react_json_pattern, html, re.DOTALL)
+        for match in react_matches:
+            # Look for JSON-like structures in the React code
+            json_like_pattern = r'"display_url":"([^"]+)"'
+            display_urls = re.findall(json_like_pattern, match)
+            image_urls.extend(display_urls)
+        
+        # Method 6: Try to find any Instagram CDN URLs in the HTML
+        instagram_cdn_pattern = r'(https?://[^"]*instagram\.com[^"]*\.(?:jpg|jpeg|png|webp)[^"]*)'
+        cdn_matches = re.findall(instagram_cdn_pattern, html, re.IGNORECASE)
+        image_urls.extend(cdn_matches)
+        
+        # Remove duplicates while preserving order (first pass)
+        seen_first = set()
         unique_image_urls = []
         for url in image_urls:
-            if url and url not in seen:
-                seen.add(url)
+            if url and url not in seen_first:
+                seen_first.add(url)
                 unique_image_urls.append(url)
         
         if not unique_image_urls:
+            # Try one more method: look for any img tags with src containing cdninstagram
+            img_tag_pattern = r'<img[^>]+src="([^"]*cdninstagram[^"]*)"'
+            img_tag_matches = re.findall(img_tag_pattern, html, re.IGNORECASE)
+            if img_tag_matches:
+                unique_image_urls.extend(img_tag_matches)
+        
+        # Remove duplicates again after adding img tags and filter valid URLs
+        final_seen = set()
+        final_image_urls = []
+        for url in unique_image_urls:
+            if url and url.startswith('http') and url not in final_seen:
+                final_seen.add(url)
+                final_image_urls.append(url)
+        
+        if not final_image_urls:
+            # Log some debug info before failing
+            debug_info = {
+                'has_og_image': bool(og_image_matches),
+                'has_json_ld': len(json_ld_matches) > 0,
+                'has_shared_data': bool(shared_data_match),
+                'html_length': len(html),
+                'html_preview': html[:500] if len(html) > 0 else 'Empty HTML'
+            }
             raise InstagramServiceError(
-                "Could not extract image URLs from Instagram post. "
-                "The post might be private, deleted, or Instagram's page structure has changed."
+                f"Could not extract image URLs from Instagram post. "
+                f"The post might be private, deleted, or Instagram's page structure has changed. "
+                f"Debug info: {debug_info}"
             )
         
         # Download images
         image_paths = []
-        for idx, img_url in enumerate(unique_image_urls):
+        for idx, img_url in enumerate(final_image_urls):
             try:
                 # Get image extension from URL or default to jpg
                 parsed_url = urlparse(img_url)
