@@ -5,6 +5,13 @@ from PIL import Image, ImageEnhance, ImageFilter
 import pytesseract
 import numpy as np
 
+# Try to import EasyOCR - better for social media content
+try:
+    import easyocr
+    EASYOCR_AVAILABLE = True
+except ImportError:
+    EASYOCR_AVAILABLE = False
+
 
 class OCRService:
     """Service for performing OCR on images."""
@@ -82,11 +89,36 @@ class OCRService:
         # Convert back to PIL Image
         img = Image.fromarray(img_array)
         
-        # Try multiple OCR configs and pick the best result
+        # Try EasyOCR first if available (often better for Instagram/social media)
+        if EASYOCR_AVAILABLE:
+            try:
+                # Initialize EasyOCR reader (use GPU if available, otherwise CPU)
+                reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+                
+                # Convert PIL Image to numpy array for EasyOCR
+                img_array = np.array(img)
+                
+                # Run OCR
+                results = reader.readtext(img_array, paragraph=True)
+                
+                # Combine all detected text
+                easyocr_text = "\n".join([result[1] for result in results if result[2] > 0.3])  # Confidence > 0.3
+                
+                # If EasyOCR produced reasonable results (more than 10 characters), use it
+                if len(easyocr_text.strip()) > 10:
+                    best_text = easyocr_text
+                    # Post-process
+                    best_text = OCRService._post_process_text(best_text)
+                    return best_text
+            except Exception:
+                # Fall back to Tesseract if EasyOCR fails
+                pass
+        
+        # Try multiple Tesseract OCR configs and pick the best result
         # Different PSM modes work better for different image layouts
         configs = [
-            r'--oem 3 --psm 6',  # Uniform block of text
-            r'--oem 3 --psm 11',  # Sparse text (one word per line)
+            r'--oem 3 --psm 11',  # Sparse text (one word per line) - often best for Instagram
+            r'--oem 3 --psm 6',   # Uniform block of text
             r'--oem 3 --psm 12',  # OSD sparse text (with orientation detection)
             r'--oem 3 --psm 4',   # Single column of text
             r'--oem 3 --psm 3',   # Fully automatic (default)

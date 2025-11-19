@@ -26,3 +26,4 @@ instaloader>=4.14.2
 # For enhanced OCR (optional):
 # paddlepaddle>=2.5.0  # PaddleOCR backend
 # paddleocr>=2.7.0  # PaddleOCR
+easyocr>=1.7.0  # EasyOCR - better for social media content (recommended for Instagram)

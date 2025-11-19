@@ -83,10 +83,15 @@ class InstagramService:
         # Extract image URLs from HTML
         image_urls = []
         
-        # Method 1: Extract from Open Graph meta tags
+        # Method 1: Extract from Open Graph meta tags (these are usually higher quality)
         og_image_pattern = r'<meta\s+property="og:image"\s+content="([^"]+)"'
         og_image_matches = re.findall(og_image_pattern, html)
-        image_urls.extend(og_image_matches)
+        for url in og_image_matches:
+            # Try to get higher resolution version by removing size parameters
+            # Instagram URLs often have ?width=XXX&height=XXX - remove those for full size
+            high_res_url = re.sub(r'[?&](width|height|quality|fit)=[^&]*', '', url)
+            if high_res_url not in image_urls:
+                image_urls.append(high_res_url)
         
         # Method 2: Extract from JSON-LD structured data
         json_ld_pattern = r'<script type="application/ld\+json">(.*?)</script>'
@@ -131,15 +136,28 @@ class InstagramService:
                         post_page = page[0]
                         if 'graphql' in post_page:
                             shortcode_media = post_page['graphql'].get('shortcode_media', {})
-                            # Single image post
-                            if 'display_url' in shortcode_media:
+                            # Single image post - prefer high_resolution_video or display_url
+                            if 'display_resources' in shortcode_media:
+                                # display_resources is an array sorted by quality (highest first)
+                                resources = shortcode_media.get('display_resources', [])
+                                if resources:
+                                    # Get the highest quality (first) resource
+                                    best_resource = resources[0]
+                                    if 'src' in best_resource:
+                                        image_urls.append(best_resource['src'])
+                            elif 'display_url' in shortcode_media:
                                 image_urls.append(shortcode_media['display_url'])
                             # Carousel post
                             if 'edge_sidecar_to_children' in shortcode_media:
                                 edges = shortcode_media['edge_sidecar_to_children'].get('edges', [])
                                 for edge in edges:
                                     node = edge.get('node', {})
-                                    if 'display_url' in node:
+                                    # Prefer display_resources for carousel too
+                                    if 'display_resources' in node:
+                                        resources = node.get('display_resources', [])
+                                        if resources and 'src' in resources[0]:
+                                            image_urls.append(resources[0]['src'])
+                                    elif 'display_url' in node:
                                         image_urls.append(node['display_url'])
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
