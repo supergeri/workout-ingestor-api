@@ -618,11 +618,31 @@ class ParserService:
             return ParserService._parse_cycling_workout(text, source)
         
         # Extract title if present (look for title-like lines at the start)
-        title_match = re.search(r'^([A-Z][^.\n]{5,60}Workout[^\n]*)', text, re.MULTILINE | re.IGNORECASE)
-        workout_title = title_match.group(1).strip() if title_match else "AI Generated Workout"
+        # Match titles with emoji or without, must contain "Workout" or be a workout-like description
+        title_patterns = [
+            r'^([🔥🏋️💥🧊]*\s*[A-Z][^.\n]{5,80}Workout[^\n]*)',  # With emoji and "Workout"
+            r'^([🔥🏋️💥🧊]*\s*[A-Z][^.\n]{10,80}(?:Strength|Endurance|Cardio|Upper|Lower|Full)[^\n]*)',  # With exercise type
+            r'^([A-Z][^.\n]{5,60}Workout[^\n]*)',  # Without emoji
+        ]
         
         blocks: List[Block] = []
         lines = text.split('\n')
+        
+        workout_title = "AI Generated Workout"
+        title_line_index = -1
+        for pattern in title_patterns:
+            title_match = re.search(pattern, text, re.MULTILINE | re.IGNORECASE)
+            if title_match:
+                workout_title = title_match.group(1).strip()
+                # Remove emoji from title for cleaner display
+                workout_title = re.sub(r'^[🔥🏋️💥🧊]+\s*', '', workout_title)
+                # Find which line contains the title so we can skip it
+                title_text = title_match.group(0).strip()
+                for idx, line in enumerate(lines):
+                    if title_text in line or workout_title in line:
+                        title_line_index = idx
+                        break
+                break
         
         current_block: Optional[Block] = None
         pending_exercises: List[Exercise] = []  # Exercises collected before superset marker
@@ -631,13 +651,49 @@ class ParserService:
         while i < len(lines):
             line = lines[i].strip()
             
+            # Skip the title line (we already extracted it)
+            if i == title_line_index:
+                i += 1
+                continue
+            
             # Skip empty lines and separator lines (⸻)
             if not line or line == '⸻':
                 i += 1
                 continue
             
             # Check for numbered section header (e.g., "1. Big Lifts (Single Sets)")
-            section_match = re.match(r'^\d+\.\s+(.+?)(?:\s*\([^)]+\))?$', line)
+            # Only match if it looks like a section title (short, no exercise indicators like "sets", "reps", "x")
+            numbered_section_match = re.match(r'^\d+\.\s+(.+?)(?:\s*\([^)]+\))?$', line)
+            is_numbered_section = False
+            if numbered_section_match:
+                # Section headers are usually short (< 50 chars) and don't contain exercise indicators
+                section_text = numbered_section_match.group(1).lower()
+                has_exercise_indicators = any(indicator in section_text for indicator in ['sets', 'reps', ' x ', '–', '-'])
+                is_numbered_section = len(line) < 60 and not has_exercise_indicators
+            
+            # Check for emoji/formatted section headers (e.g., "🔥 Warm-Up (10 min):", "🏋️ Strength Block (30 min):")
+            # Match one or more emojis followed by text (may or may not end with colon)
+            emoji_section_match = re.match(r'^[🔥🏋️💥🧊🧘🎯]+(?:\s+)?(.+?)(?:\s*\([^)]+\))?:?$', line)
+            
+            # Check for plain text section headers ending with colon (e.g., "Warm-Up (10 min):")
+            # Must be relatively short and not contain exercise indicators
+            colon_section_match = None
+            if len(line) < 80 and ':' in line:
+                match = re.match(r'^([A-Z][A-Za-z\s&/+-]+?)(?:\s*\([^)]+\))?:?$', line)
+                if match:
+                    section_text = match.group(1).lower()
+                    has_exercise_indicators = any(indicator in section_text for indicator in ['sets', 'reps', ' x ', '–', '-'])
+                    if not has_exercise_indicators:
+                        colon_section_match = match
+            
+            section_match = None
+            if is_numbered_section:
+                section_match = numbered_section_match
+            elif emoji_section_match:
+                section_match = emoji_section_match
+            elif colon_section_match:
+                section_match = colon_section_match
+            
             if section_match:
                 # Save previous block if exists
                 if current_block:
@@ -649,8 +705,10 @@ class ParserService:
                         blocks.append(current_block)
                 
                 section_title = section_match.group(1).strip()
-                # Extract category from parentheses if present
-                category_match = re.search(r'\(([^)]+)\)', section_match.group(0))
+                # Remove emoji if present
+                section_title = re.sub(r'^[🔥🏋️💥🧊]+\s*', '', section_title)
+                # Extract category from parentheses if present (e.g., "(10 min)", "(30 min)")
+                category_match = re.search(r'\(([^)]+)\)', line)
                 category = category_match.group(1) if category_match else None
                 
                 block_label = section_title
@@ -658,6 +716,12 @@ class ParserService:
                     block_label = f"{section_title} ({category})"
                 
                 current_block = Block(label=block_label)
+                # Extract time from category if it's a duration (e.g., "10 min", "30 min")
+                if category and 'min' in category.lower():
+                    time_match = re.search(r'(\d+)\s*min', category.lower())
+                    if time_match:
+                        current_block.time_work_sec = to_int(time_match.group(1)) * 60
+                        current_block.structure = category
                 pending_exercises.clear()
                 i += 1
                 continue
@@ -686,12 +750,33 @@ class ParserService:
                 continue
             
             # Skip standalone description lines that are clearly not exercises
-            # But we'll collect them as part of the previous exercise below
+            # Skip metadata lines (Location, Duration, Frequency, Goal, etc.)
+            metadata_patterns = [
+                r'^(Location|Duration|Frequency|Goal|Equipment|Notes?|Instructions?):',
+                r'^\d+\s*(minutes?|mins?|hours?|hrs?)(\s+per|/)?',
+                r'^Frequency:',
+                r'^Goal:',
+            ]
+            is_metadata = any(re.match(pattern, line, re.I) for pattern in metadata_patterns)
+            if is_metadata:
+                i += 1
+                continue
             
-            # Look for exercise lines (usually start with • or are indented)
-            if line.startswith('•') or (line and len(line) > 10 and not line.startswith('(')):
-                # Remove bullet point and leading whitespace
-                exercise_line = re.sub(r'^[•\s]+', '', line)
+            # Look for exercise lines (usually start with • or numbered list items or are indented)
+            # Check for numbered exercise list items (e.g., "1. Exercise Name – 4 sets x 5–8 reps")
+            is_numbered_exercise = re.match(r'^\d+\.\s+.+?[\s–\-](?:sets|reps|x)', line, re.I)
+            
+            # Exercise lines should contain exercise-related keywords or patterns
+            has_exercise_indicators = (
+                re.search(r'\b(sets|reps|x|minutes?|sec|kg|lb|lbs?|weight|carry|press|row|pull|push|squat|deadlift|lunge|curl|raise|fly|extension|dip|pull.?up)\b', line, re.I) or
+                is_numbered_exercise or
+                line.startswith('•')
+            )
+            
+            if (line.startswith('•') or is_numbered_exercise) or (has_exercise_indicators and line and len(line) > 10 and not line.startswith('(')):
+                # Remove bullet point, number prefix, and leading whitespace
+                exercise_line = re.sub(r'^(?:•|\d+\.)\s+', '', line)
+                exercise_line = exercise_line.strip()
                 
                 # Skip if line is too short after cleaning
                 if len(exercise_line) < 3:
@@ -706,10 +791,16 @@ class ParserService:
                 while j < len(lines):
                     next_line = lines[j].strip()
                     # Stop if we hit a new exercise bullet, section, superset marker, or separator
+                    # Also check for emoji headers (new block headers)
+                    is_next_section_header = (
+                        re.match(r'^[🔥🏋️💥🧊🧘🎯]+', next_line) or  # Emoji header
+                        re.match(r'^\d+\.\s+(.+?)(?:\s*\([^)]+\))?$', next_line) and len(next_line) < 60  # Numbered section
+                    )
                     if (next_line == '⸻' or
                         next_line.startswith('•') or
                         (next_line.startswith('(') and 'superset' in next_line.lower()) or
-                        re.match(r'^\d+\.', next_line)):
+                        re.match(r'^\d+\.', next_line) or
+                        is_next_section_header):
                         break
                     # Continue collecting description lines
                     if next_line:
@@ -805,6 +896,29 @@ class ParserService:
         if not line or len(line) < 3:
             return None
         
+        # Filter out metadata and non-exercise content
+        metadata_keywords = [
+            r'^(Location|Duration|Frequency|Goal|Equipment|Notes?|Instructions?):',
+            r'^\d+\s*(minutes?|mins?|hours?|hrs?)$',
+            r'^\d+x/week',
+            r'^Build\s+',
+            r'^Location:',
+            r'^Duration:',
+            r'^Frequency:',
+            r'^Goal:',
+        ]
+        if any(re.match(pattern, line, re.I) for pattern in metadata_keywords):
+            return None
+        
+        # Must contain exercise-related keywords or patterns
+        exercise_keywords = [
+            r'\b(sets|reps|x|minutes?|sec|kg|lb|lbs?|weight|carry|press|row|pull|push|squat|deadlift|lunge|curl|raise|fly|extension|dip|pull.?up|pullup|bike|row|run|jump|burpee|thruster|swing|snatch|clean|jerk|wall.?ball|farmer|sled|push.?up|pushup|inchworm|circle|band|stretch|warm.?up)\b',
+            r'–|x\s*\d+',  # Contains dash or "x" followed by number
+        ]
+        has_exercise_content = any(re.search(pattern, line, re.I) for pattern in exercise_keywords)
+        if not has_exercise_content and len(line) < 20:
+            return None
+        
         # Split by newline if present (sometimes equipment is on separate line)
         parts = [p.strip() for p in line.split('\n') if p.strip()]
         if not parts:
@@ -828,15 +942,24 @@ class ParserService:
                 # Remove trailing dashes
                 exercise_part = re.sub(r'[\s–\-]+$', '', exercise_part)
         else:
-            # For exercises with inline reps like "Exercise – 8–10 reps"
-            # Take everything up to the dash followed by numbers or rep indicators
-            exercise_name_match = re.match(r'^(.+?)(?:[\s–\-]\s*(?:\d+|/side|AMRAP|reps?)|$)', full_text, re.I)
-            if exercise_name_match:
-                exercise_part = exercise_name_match.group(1).strip()
+            # For exercises with inline reps like "Exercise – 8–10 reps" or "Exercise x 20"
+            # Take everything up to the dash or "x" followed by numbers
+            # First try pattern with "x NUMBER" (don't cut off at x)
+            x_number_match = re.search(r'^(.+?)\s+[x×]\s+(\d+)', full_text, re.I)
+            if x_number_match:
+                # Don't include "x NUMBER" in the exercise name, it will be extracted as reps
+                exercise_part = x_number_match.group(1).strip()
                 # Remove trailing dashes
                 exercise_part = re.sub(r'[\s–\-]+$', '', exercise_part)
             else:
-                exercise_part = parts[0].strip()
+                # Try pattern with dash followed by numbers or rep indicators
+                exercise_name_match = re.match(r'^(.+?)(?:[\s–\-]\s*(?:\d+|/side|AMRAP|reps?)|$)', full_text, re.I)
+                if exercise_name_match:
+                    exercise_part = exercise_name_match.group(1).strip()
+                    # Remove trailing dashes
+                    exercise_part = re.sub(r'[\s–\-]+$', '', exercise_part)
+                else:
+                    exercise_part = parts[0].strip()
         
         # Extract equipment notes - look for parentheses that contain equipment keywords
         equipment_keywords = ['using', 'or', 'dumbbell', 'barbell', 'bar', 'bench', 'band', 'jammer', 'arms', 'slot']
@@ -853,7 +976,8 @@ class ParserService:
         
         # Clean up exercise name
         exercise_name = re.sub(r'\s+', ' ', exercise_part).strip()
-        # Remove trailing dashes
+        # Remove trailing dashes and any "– X sets" or "– X reps" patterns
+        exercise_name = re.sub(r'[\s–\-]+\d+\s*(sets?|reps?)(?:\s|$)', '', exercise_name, flags=re.I)
         exercise_name = re.sub(r'[\s–\-]+$', '', exercise_name).strip()
         
         # Add equipment back if we found it
@@ -881,21 +1005,53 @@ class ParserService:
                 if reps_match:
                     reps = to_int(reps_match.group(1))
         
-        # Pattern: "X sets" or "x3"
+        # Pattern: "X sets" - prioritize explicit "sets" keyword
         if not sets:
-            sets_match = re.search(r'(\d+)\s*sets?', full_text, re.I) or re.search(r'[x×]\s*(\d+)', full_text, re.I)
+            sets_match = re.search(r'(\d+)\s*sets?', full_text, re.I)
             if sets_match:
                 sets = to_int(sets_match.group(1))
         
-        # Pattern: "6–8 reps" or "8-10 reps"
+        # IMPORTANT: Check rep ranges BEFORE single "x NUMBER" patterns
+        # This prevents "x 5" from "4 sets x 5–8 reps" from being set as reps=5
+        # Pattern: "6–8 reps" or "8-10 reps" or "4 sets x 5–8 reps" (rep ranges)
         if not reps and not reps_range:
-            reps_match = re.search(r'(\d+)[\s–\-]+(\d+)\s*reps?', full_text, re.I)
-            if reps_match:
-                reps_range = f"{reps_match.group(1)}-{reps_match.group(2)}"
+            # Priority 1: Look for "X sets x Y–Z" or "X sets x Y–Z reps" pattern (most specific)
+            sets_x_range_match = re.search(r'sets?\s*[x×]\s*(\d+)[\s–\-]+(\d+)(?:\s*reps?)?', full_text, re.I)
+            if sets_x_range_match:
+                reps_range = f"{sets_x_range_match.group(1)}-{sets_x_range_match.group(2)}"
             else:
-                reps_match = re.search(r'(\d+)\s*reps?', full_text, re.I)
-                if reps_match:
-                    reps = to_int(reps_match.group(1))
+                # Priority 2: Look for "Y–Z reps" pattern (with explicit "reps" keyword)
+                reps_range_match = re.search(r'(\d+)[\s–\-]+(\d+)\s*reps?', full_text, re.I)
+                if reps_range_match:
+                    reps_range = f"{reps_range_match.group(1)}-{reps_range_match.group(2)}"
+        
+        # Pattern: "x 20" or "x20" (single number after x) - determine if it's sets or reps
+        # Only check if we haven't already found reps/rep_range from patterns above
+        if not reps and not reps_range:
+            x_number_match = re.search(r'[x×]\s*(\d+)(?:\s*reps?)?(?:\s|$|[^0-9])', full_text, re.I)
+            if x_number_match:
+                x_number = to_int(x_number_match.group(1))
+                # If we already found sets via "X sets" pattern, then "x NUMBER" is reps
+                if sets:
+                    reps = x_number
+                else:
+                    # Check context - if it's after exercise name (not at start), it's likely reps
+                    # Pattern like "Exercise Name x 20" -> reps
+                    # Pattern like "3x Exercise" -> sets
+                    x_pos = x_number_match.start()
+                    before_x = full_text[:x_pos].strip()
+                    # If there's text before "x NUMBER" (exercise name), it's reps
+                    if len(before_x) > 5:  # Has exercise name before it
+                        reps = x_number
+                    else:
+                        # At start, might be sets
+                        sets = x_number
+        
+        # Fallback: Single reps if no range or "x NUMBER" pattern found
+        if not reps and not reps_range:
+            reps_match = re.search(r'(\d+)\s*reps?', full_text, re.I)
+            if reps_match:
+                reps = to_int(reps_match.group(1))
         
         # Pattern: "AMRAP (8–12 target)" - use target as rep range
         amrap_match = re.search(r'AMRAP\s*\((\d+)[\s–\-](\d+)\s*target\)', full_text, re.I)
@@ -917,9 +1073,13 @@ class ParserService:
                 # Use upper bound if range provided
                 duration_sec = to_int(time_match.group(2))
         
-        # Default to 1 set if no sets specified but reps found
+        # Default to 1 set if no sets specified but reps found (only for exercises with explicit reps)
+        # Don't default sets for exercises that might not need it (like warm-up exercises)
         if not sets and (reps or reps_range):
-            sets = 1
+            # Only default to 1 set if there's an explicit rep count/range
+            # Skip default for time-based exercises (duration_sec is set)
+            if not duration_sec:
+                sets = 1
         
         # Determine exercise type
         ex_type = "strength"
