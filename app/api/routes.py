@@ -19,8 +19,19 @@ from app.services.export_service import ExportService
 from app.services.instagram_service import InstagramService, InstagramServiceError
 from app.services.vision_service import VisionService
 from app.services.llm_service import LLMService
+from app.services.feedback_service import FeedbackService
 
 router = APIRouter()
+
+# Feedback models
+class NotWorkoutFeedback(BaseModel):
+    text: str
+    block_label: Optional[str] = None
+    source: Optional[str] = None
+
+class JunkPatternFeedback(BaseModel):
+    text: str
+    reason: Optional[str] = None
 
 
 EXERCISE_SUMMARY_RULES = [
@@ -299,10 +310,26 @@ def health():
 
 
 @router.post("/ingest/text")
-async def ingest_text(text: str = Form(...), source: Optional[str] = Form(None)):
-    """Ingest workout from plain text."""
-    wk = ParserService.parse_free_text_to_workout(text, source)
-    return JSONResponse(wk.model_dump())
+async def ingest_text(
+    text: str = Form(...), 
+    source: Optional[str] = Form(None),
+    return_filtered: bool = Form(False)
+):
+    """Ingest workout from plain text.
+    
+    Args:
+        text: Plain text workout to parse
+        source: Optional source identifier
+        return_filtered: If True, include filtered junk items in response for review
+    """
+    result = ParserService.parse_free_text_to_workout(text, source, return_filtered=return_filtered)
+    if return_filtered:
+        workout, filtered_items = result
+        response = workout.model_dump()
+        response["_filtered_items"] = filtered_items
+        return JSONResponse(response)
+    else:
+        return JSONResponse(result.model_dump())
 
 
 @router.post("/ingest/ai_workout")
@@ -317,12 +344,33 @@ async def ingest_ai_workout(text: str = Body(..., media_type="text/plain")):
 
 
 @router.post("/ingest/image")
-async def ingest_image(file: UploadFile = File(...)):
-    """Ingest workout from image using OCR."""
+async def ingest_image(
+    file: UploadFile = File(...),
+    return_filtered: bool = Form(False)
+):
+    """Ingest workout from image using OCR.
+    
+    Args:
+        file: Image file to process
+        return_filtered: If True, include filtered junk items in response for review
+    """
     b = await file.read()
-    text = OCRService.ocr_image_bytes(b)
-    workout = ParserService.parse_free_text_to_workout(text, source=f"image:{file.filename}")
-    return JSONResponse(workout.model_dump())
+    text = OCRService.ocr_image_bytes(b, fast_mode=True)
+    
+    # Log OCR text for debugging
+    print(f"=== OCR TEXT DEBUG ===")
+    print(f"Full OCR text ({len(text)} chars):")
+    print(text)
+    print(f"=== END OCR TEXT ===")
+    
+    result = ParserService.parse_free_text_to_workout(text, source=f"image:{file.filename}", return_filtered=return_filtered)
+    if return_filtered:
+        workout, filtered_items = result
+        response = workout.model_dump()
+        response["_filtered_items"] = filtered_items
+        return JSONResponse(response)
+    else:
+        return JSONResponse(result.model_dump())
 
 
 @router.post("/ingest/image_vision")
@@ -487,7 +535,7 @@ async def ingest_url(url: str = Body(..., embed=True)):
                 check=True
             )
             VideoService.sample_frames(video_path, tmpdir, fps=0.75, max_secs=25)
-            ocr_text = OCRService.ocr_many_images_to_text(tmpdir)
+            ocr_text = OCRService.ocr_many_images_to_text(tmpdir, fast_mode=True)
         except subprocess.CalledProcessError:
             pass
         finally:
@@ -553,23 +601,43 @@ async def ingest_instagram_test(payload: InstagramTestRequest):
         except Exception as exc:  # pragma: no cover - unexpected runtime errors
             raise HTTPException(status_code=500, detail=f"Instagram ingestion failed: {exc}") from exc
 
-        # Extract text from images using OCR only
+        # Extract text from images using OCR only (parallelized for speed)
         # Note: Vision models don't work well with Instagram's low-quality images
-        text_segments = []
-        for image_path in image_paths:
+        # Use fast_mode=True for faster processing (slightly less accurate)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        def process_image(image_path):
+            """Process a single image and return extracted text."""
             try:
                 with open(image_path, "rb") as file_obj:
-                    extracted = OCRService.ocr_image_bytes(file_obj.read()).strip()
-                if extracted:
-                    text_segments.append(extracted)
+                    extracted = OCRService.ocr_image_bytes(file_obj.read(), fast_mode=True).strip()
+                    return extracted if extracted else None
             except Exception:
-                continue
+                return None
+        
+        text_segments = []
+        # Process images in parallel (up to 4 workers) with timeout
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(process_image, img_path): img_path for img_path in image_paths}
+            try:
+                for future in as_completed(futures, timeout=90):  # 90 second timeout for all images
+                    try:
+                        result = future.result(timeout=30)  # 30 second timeout per image
+                        if result:
+                            text_segments.append(result)
+                    except Exception as e:
+                        print(f"Error processing image: {e}")
+                        continue  # Continue with other images
+            except TimeoutError:
+                print("Timeout processing Instagram images - using partial results")
+                # Use whatever we got so far
 
         if not text_segments:
             raise HTTPException(status_code=422, detail="OCR could not extract text from Instagram images. The images may be too low quality or contain no readable text.")
 
         merged = "\n".join(text_segments)
-        workout = ParserService.parse_free_text_to_workout(merged, source=payload.url)
+        result = ParserService.parse_free_text_to_workout(merged, source=payload.url, return_filtered=True)
+        workout, filtered_items = result
 
         response_payload = workout.model_dump()
         response_payload.setdefault("_provenance", {})
@@ -579,6 +647,9 @@ async def ingest_instagram_test(payload: InstagramTestRequest):
             "image_count": len(image_paths),
             "extraction_method": "ocr",
         })
+        
+        # Always include filtered items for review
+        response_payload["_filtered_items"] = filtered_items
 
         return JSONResponse(response_payload)
     finally:
@@ -789,9 +860,46 @@ async def ingest_youtube(payload: YouTubeTranscriptRequest):
         "has_captions": True,
         "has_asr": False,
         "has_ocr": False,
-        "transcript_provider": "youtube-transcript.io",
-        "transcript_summarized": bool(summary_text),
     })
-
+    
     return JSONResponse(response_payload)
+
+
+@router.post("/feedback/not-workout")
+async def feedback_not_workout(feedback: NotWorkoutFeedback):
+    """
+    Record feedback that a block/text is not a workout.
+    This helps improve OCR and parsing by learning what to filter out.
+    
+    Args:
+        feedback: Feedback data containing text that was marked as not a workout
+        
+    Returns:
+        Success confirmation
+    """
+    FeedbackService.record_not_workout(
+        text=feedback.text,
+        block_label=feedback.block_label,
+        source=feedback.source
+    )
+    return JSONResponse({"success": True, "message": "Feedback recorded"})
+
+
+@router.post("/feedback/junk-pattern")
+async def feedback_junk_pattern(feedback: JunkPatternFeedback):
+    """
+    Record feedback that a pattern is junk.
+    This helps improve junk detection.
+    
+    Args:
+        feedback: Feedback data containing text that was confirmed as junk
+        
+    Returns:
+        Success confirmation
+    """
+    FeedbackService.record_junk_pattern(
+        text=feedback.text,
+        reason=feedback.reason
+    )
+    return JSONResponse({"success": True, "message": "Junk pattern recorded"})
 

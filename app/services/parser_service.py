@@ -1,8 +1,15 @@
 """Parser service for converting free text into structured workout data."""
 import re
-from typing import List, Optional
+from typing import List, Optional, Union, Tuple
 from app.models import Workout, Block, Exercise, Superset
 from app.utils import to_int
+
+# Try to import feedback service (optional - won't fail if not available)
+try:
+    from app.services.feedback_service import FeedbackService
+    FEEDBACK_AVAILABLE = True
+except ImportError:
+    FEEDBACK_AVAILABLE = False
 
 # Constants
 SKI_DEFAULT_WORK = 60
@@ -15,7 +22,7 @@ RE_REPS_AFTER_X = re.compile(r"[x×]\s*(?P<rmin>\d+)\s*[\-–]\s*(?P<rmax>\d+)\b
 RE_REPS_PLAIN_X = re.compile(r"[x×]\s*(?P<reps>\d+)\b", re.I)
 RE_LABELED = re.compile(r"^[A-E](?:[0-9A-Za-z]+)?[:\-]?\s*(.*)", re.I)
 RE_LETTER_START = re.compile(r"^['\"]?[A-E]", re.I)
-RE_HEADER = re.compile(r"(primer|strength|power|finisher|metabolic|conditioning|amrap|circuit|muscular\s+endurance|tabata|warm.?up)", re.I)
+RE_HEADER = re.compile(r"(primer|strength\s*/\s*power|strength|power|finisher|metabolic\s*conditioning|metabolic|conditioning|amrap|circuit|muscular\s+endurance|tabata|warm.?up)", re.I)
 RE_WEEK = re.compile(r"^(week\s*\d+\s*of\s*\d+)", re.I)
 RE_TITLE_HINT = re.compile(r"^(upper|lower|full)\s+body|workout|dumbbell", re.I)
 RE_ROUNDS_SETS = re.compile(r"(?:(?P<n>\d+)\s*(?P<kind>rounds?|sets?))", re.I)
@@ -54,13 +61,41 @@ class ParserService:
     @staticmethod
     def _is_junk(ln: str) -> bool:
         """Check if a line is junk/irrelevant text."""
+        ln_stripped = ln.strip()
+        ln_lower = ln_stripped.lower()
+        
+        # Check against learned patterns from user feedback
+        if FEEDBACK_AVAILABLE:
+            try:
+                if FeedbackService.is_likely_not_workout(ln_stripped):
+                    return True
+            except Exception:
+                pass  # Don't fail if feedback service has issues
+        
         # Skip very short or mostly punctuation / OCR gunk
-        if len(ln) < 4:
+        if len(ln_stripped) < 4:
+            return True
+        
+        # Skip common OCR junk words/phrases that appear frequently
+        junk_words = [
+            'age', 'ago', 'are', 'ate', 'ave', 'ave.', 'ave,',  # Common OCR misreads
+            'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all',  # Common words without context
+            'like', 'share', 'comment', 'follow', 'followers', 'following',  # Social media UI
+            'save', 'more', 'less', 'view', 'show', 'hide',  # UI elements
+            'block', 'page', 'next', 'prev', 'previous',  # Navigation
+        ]
+        
+        # If line is just a junk word (with optional punctuation/quotes), skip it
+        ln_clean = re.sub(r'^["\']+|["\']+$', '', ln_lower).strip()
+        if ln_clean in junk_words:
+            return True
+        
+        # Skip lines that are just a junk word followed by punctuation/quotes
+        if re.match(r'^["\']?' + '|'.join(junk_words) + r'["\']?$', ln_lower):
             return True
         
         # Skip Instagram UI elements - but only if the line doesn't contain exercise content
         instagram_words = ['like', 'dislike', 'share', 'comment', 'follow', 'followers', 'following']
-        ln_lower = ln.lower()
         # Check if line contains Instagram words AND no exercise indicators
         exercise_indicators = ['x', ':', 'kg', 'kb', 'db', 'rep', 'set', 'round', 'meter', 'm', 
                               'squat', 'press', 'push', 'pull', 'carry', 'sled', 'swing', 'burpee', 'jump']
@@ -70,33 +105,56 @@ class ParserService:
             return True
         
         # Skip lines that are just numbers (like Instagram like counts: "4", "0")
-        if re.match(r'^\d+$', ln.strip()) and len(ln.strip()) <= 3:
+        if re.match(r'^\d+$', ln_stripped) and len(ln_stripped) <= 3:
             return True
+        
+        # Skip lines that are just numbers with units (like "368 MINS", "500 REPS") without exercise name
+        # These are often OCR artifacts where numbers get misread
+        if re.match(r'^\d+\s+(MINS?|MINUTES?|REPS?|SECS?|SECONDS?|KG|LB|LBS?|KM|M|METERS?|MILES?)$', ln_stripped, re.I):
+            return True
+        
+        # Skip lines that are very large numbers with units (unrealistic for exercises)
+        # e.g., "368 MINS", "500 REPS" - these are likely OCR errors
+        large_number_with_unit = re.match(r'^(?P<num>\d+)\s+(MINS?|MINUTES?|REPS?|SECS?|SECONDS?)$', ln_stripped, re.I)
+        if large_number_with_unit:
+            num = int(large_number_with_unit.group('num'))
+            # If number is > 100 for MINS or > 500 for REPS, it's likely junk
+            unit = large_number_with_unit.group(2).upper()
+            if 'MIN' in unit and num > 100:
+                return True
+            if 'REP' in unit and num > 500:
+                return True
+            if 'SEC' in unit and num > 3600:  # More than 1 hour in seconds
+                return True
         
         # Skip lines that look like "block 1", "block 2", etc. (OCR artifacts)
-        if re.match(r'^block\s+\d+$', ln.lower()):
+        if re.match(r'^block\s+\d+$', ln_lower):
             return True
         
-        # Skip lines that are just single letters or weird patterns like "q:Ry"
-        if re.match(r'^[a-z]:[A-Z][a-z]+$', ln):
+        # Skip lines that are just single letters or weird patterns like "q:Ry" or "age"
+        if re.match(r'^[a-z]{1,4}["\']?$', ln_lower) and ln_lower in junk_words:
+            return True
+        
+        # Skip lines that are just a word followed by quotes (common OCR artifact)
+        if re.match(r'^["\']?[a-z]{1,6}["\']?$', ln_lower) and not has_exercise_content:
             return True
         
         # Count letters and common punctuation
-        letters = re.sub(r"[^A-Za-z]", "", ln)
+        letters = re.sub(r"[^A-Za-z]", "", ln_stripped)
         if len(letters) <= 2:
             return True
         
         # Skip lines with excessive backslashes or weird characters (OCR artifacts)
-        if ln.count('\\') > 2 or ln.count('|') > 2:
+        if ln_stripped.count('\\') > 2 or ln_stripped.count('|') > 2:
             return True
         
         # Skip lines that look like corrupted text
-        if re.match(r'^\\\s*[a-z]\.\s*[a-z]', ln.lower()):
+        if re.match(r'^\\\s*[a-z]\.\s*[a-z]', ln_lower):
             return True
         
         # Skip lines with too many single characters separated by spaces/punctuation
-        single_chars = re.findall(r'\b[a-z]\b', ln.lower())
-        if len(single_chars) > len(ln.split()) * 0.5:  # More than 50% single characters
+        single_chars = re.findall(r'\b[a-z]\b', ln_lower)
+        if len(single_chars) > len(ln_stripped.split()) * 0.5:  # More than 50% single characters
             return True
         
         # Skip lines that don't contain any recognizable exercise-related words
@@ -105,11 +163,10 @@ class ParserService:
                          'walk', 'bike', 'swim', 'ski', 'erg', 'meter', 'rep', 'set', 'round',
                          'goodmorning', 'sled', 'drag', 'carry', 'farmer', 'hand', 'release',
                          'kb', 'db', 'dual', 'alternating', 'broad', 'swing', 'skier']
-        ln_lower = ln.lower()
         has_exercise_word = any(word in ln_lower for word in exercise_words)
         
         # If it's a short line without exercise words and has weird characters, skip it
-        if len(ln) < 20 and not has_exercise_word and re.search(r'[\\|\.]{2,}', ln):
+        if len(ln_stripped) < 20 and not has_exercise_word and re.search(r'[\\|\.]{2,}', ln_stripped):
             return True
         
         return False
@@ -206,6 +263,12 @@ class ParserService:
             return None
         if "ENGINEBUILDER" not in compact:
             return None
+        # Don't use Engine Builder parser if it looks like a structured workout program
+        # (e.g., "WEEK X OF Y", "PRIMER", "STRENGTH", etc.)
+        if re.search(r"WEEK\s*\d+\s*OF\s*\d+", joined_upper):
+            return None
+        if "PRIMER" in joined_upper or "STRENGTH" in joined_upper or "MUSCULAR" in joined_upper or "METABOLIC" in joined_upper:
+            return None
 
         exercises: List[Exercise] = []
 
@@ -276,26 +339,45 @@ class ParserService:
         return workout
 
     @staticmethod
-    def parse_free_text_to_workout(text: str, source: Optional[str] = None) -> Workout:
+    def parse_free_text_to_workout(text: str, source: Optional[str] = None, return_filtered: bool = False) -> Union[Workout, Tuple[Workout, List[dict]]]:
         """
         Parse free text into a structured Workout object.
         
         Args:
             text: Raw text to parse
             source: Optional source identifier
+            return_filtered: If True, return tuple of (Workout, filtered_items)
             
         Returns:
-            Parsed Workout object
+            Parsed Workout object, or tuple of (Workout, filtered_items) if return_filtered=True
         """
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         
         # Clean up OCR artifacts before processing
         cleaned_lines = ParserService._clean_ocr_artifacts(lines)
         
+        # Track filtered junk items for review
+        filtered_items = []
+        
         # Special-case HYROX Engine Builder style cards
-        hyrox_workout = ParserService._parse_hyrox_engine_builder(cleaned_lines, source)
-        if hyrox_workout:
-            return hyrox_workout
+        # BUT: Skip if it looks like a structured workout program (has section headers)
+        has_structured_sections = any(
+            re.search(r"(primer|strength\s*/\s*power|muscular\s+endurance|metabolic\s*conditioning)", ln, re.I)
+            for ln in cleaned_lines
+        )
+        has_week_format = any(
+            re.search(r"week\s*\d+\s*of\s*\d+", ln, re.I)
+            for ln in cleaned_lines
+        )
+        
+        # Only use Engine Builder parser if it's clearly an Engine Builder card
+        # (has HYROX + ENGINEBUILDER but NOT structured sections)
+        if not has_structured_sections and not has_week_format:
+            hyrox_workout = ParserService._parse_hyrox_engine_builder(cleaned_lines, source)
+            if hyrox_workout:
+                if return_filtered:
+                    return hyrox_workout, filtered_items
+                return hyrox_workout
 
         # Detect time cap and Hyrox-style workouts (running + exercises)
         time_cap_minutes = None
@@ -324,6 +406,14 @@ class ParserService:
 
         for ln in cleaned_lines:
             if ParserService._is_junk(ln):
+                if return_filtered:
+                    filtered_items.append({
+                        "text": ln,
+                        "original_line": ln,
+                        "reason": "junk_detection",
+                        "block": "Unknown",
+                        "line_number": None
+                    })
                 continue
             
             # Skip time cap line (already processed)
@@ -362,8 +452,25 @@ class ParserService:
                     current.label = "Tabata"
                 continue
 
-            # Section headers
+            # Section headers - check for common workout section patterns
+            # Also check for all-caps section headers (common in OCR)
+            is_section_header = False
+            ln_upper = ln.upper().strip()
+            
+            # Check regex patterns
             if RE_HEADER.search(ln) or ParserService._looks_like_header(ln):
+                is_section_header = True
+            # Also check if line is all caps and matches section header keywords
+            elif ln_upper in ["PRIMER", "STRENGTH", "POWER", "STRENGTH / POWER", "MUSCULAR ENDURANCE", "METABOLIC CONDITIONING", "CONDITIONING"]:
+                is_section_header = True
+            # Check for section headers with common OCR variations
+            elif re.match(r'^(PRIMER|STRENGTH|POWER|MUSCULAR|ENDURANCE|METABOLIC|CONDITIONING)', ln_upper):
+                is_section_header = True
+            # Check for "STRENGTH / POWER" pattern
+            elif re.search(r'STRENGTH\s*[/\\]\s*POWER', ln_upper):
+                is_section_header = True
+            
+            if is_section_header:
                 # Finish current superset if any
                 if current_superset:
                     current.supersets.append(Superset(exercises=current_superset.copy()))
@@ -373,9 +480,17 @@ class ParserService:
                     blocks.append(current)
                 # Normalize a few known variants to nicer labels
                 lbl = ln.title()
+                if re.search(r"primer", ln, re.I):
+                    lbl = "Primer"
+                if re.search(r"strength\s*/\s*power", ln, re.I):
+                    lbl = "Strength / Power"
+                elif re.search(r"strength", ln, re.I) and not re.search(r"endurance", ln, re.I):
+                    lbl = "Strength"
                 if re.search(r"muscular\s+endurance", ln, re.I):
                     lbl = "Muscular Endurance"
-                if re.search(r"metabolic|conditioning", ln, re.I):
+                if re.search(r"metabolic\s*conditioning", ln, re.I):
+                    lbl = "Metabolic Conditioning"
+                elif re.search(r"metabolic", ln, re.I) or (re.search(r"conditioning", ln, re.I) and not re.search(r"muscular", ln, re.I)):
                     lbl = "Metabolic Conditioning"
                 current = Block(label=lbl)
                 # Preserve time cap if it was set
@@ -508,10 +623,64 @@ class ParserService:
             exercise_name = re.sub(r'\s+([a-z])$', '', exercise_name)
             exercise_name = exercise_name.strip()
             
+            # Additional validation: Check if exercise name is just a number with unit (like "368 MINS")
+            # This catches cases where OCR misreads exercise names as numbers
+            if re.match(r'^\d+\s+(MINS?|MINUTES?|REPS?|SECS?|SECONDS?)$', exercise_name, re.I):
+                if return_filtered:
+                    filtered_items.append({
+                        "text": exercise_name,
+                        "original_line": full_line_for_name,
+                        "reason": "numeric_unit_only",
+                        "block": current.label or "Unknown",
+                        "line_number": None
+                    })
+                continue
+            
+            # Check for unrealistic numbers (very large durations/reps that are likely OCR errors)
+            large_num_match = re.match(r'^(?P<num>\d+)\s+(MINS?|MINUTES?|REPS?|SECS?|SECONDS?)$', exercise_name, re.I)
+            if large_num_match:
+                num = int(large_num_match.group('num'))
+                unit = large_num_match.group(2).upper()
+                is_junk = False
+                if 'MIN' in unit and num > 100:  # More than 100 minutes is unrealistic
+                    is_junk = True
+                elif 'REP' in unit and num > 500:  # More than 500 reps is unrealistic
+                    is_junk = True
+                elif 'SEC' in unit and num > 3600:  # More than 1 hour in seconds
+                    is_junk = True
+                
+                if is_junk:
+                    if return_filtered:
+                        filtered_items.append({
+                            "text": exercise_name,
+                            "original_line": full_line_for_name,
+                            "reason": "unrealistic_value",
+                            "block": current.label or "Unknown",
+                            "line_number": None
+                        })
+                    continue
+            
             if ParserService._is_junk(exercise_name):
+                # Track filtered item for review
+                if return_filtered:
+                    filtered_items.append({
+                        "text": exercise_name,
+                        "original_line": full_line_for_name,
+                        "reason": "junk_detection",
+                        "block": current.label or "Unknown",
+                        "line_number": None  # Could track line number if needed
+                    })
                 continue
             
             if re.search(r'^\\\s*[a-z]\.\s*[a-z]', exercise_name.lower()):
+                if return_filtered:
+                    filtered_items.append({
+                        "text": exercise_name,
+                        "original_line": full_line_for_name,
+                        "reason": "corrupted_text",
+                        "block": current.label or "Unknown",
+                        "line_number": None
+                    })
                 continue
             
             # Use default_sets from block if sets not already set
@@ -583,7 +752,10 @@ class ParserService:
         if current.exercises or current.supersets:
             blocks.append(current)
 
-        return Workout(title=(wk_title or "Imported Workout"), source=source, blocks=blocks)
+        workout = Workout(title=(wk_title or "Imported Workout"), source=source, blocks=blocks)
+        if return_filtered:
+            return workout, filtered_items
+        return workout
     
     @staticmethod
     def parse_ai_workout(text: str, source: Optional[str] = None) -> Workout:

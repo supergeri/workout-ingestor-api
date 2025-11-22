@@ -4,6 +4,7 @@ import json
 import re
 from typing import Dict, Optional
 from fastapi import HTTPException
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 # Optional dependencies
 try:
@@ -104,7 +105,7 @@ Return ONLY valid JSON, no additional text."""
                 detail="OpenAI API key not provided. Set OPENAI_API_KEY environment variable."
             )
         
-        client = openai.OpenAI(api_key=api_key)
+        client = openai.OpenAI(api_key=api_key, timeout=60.0)  # 60 second timeout
         
         try:
             response = client.chat.completions.create(
@@ -114,7 +115,8 @@ Return ONLY valid JSON, no additional text."""
                     {"role": "user", "content": text}
                 ],
                 temperature=0.1,  # Low temperature for structured output
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                timeout=60.0  # 60 second timeout
             )
             
             result_text = response.choices[0].message.content
@@ -155,7 +157,7 @@ Return ONLY valid JSON, no additional text."""
                 detail="Anthropic API key not provided. Set ANTHROPIC_API_KEY environment variable."
             )
         
-        client = Anthropic(api_key=api_key)
+        client = Anthropic(api_key=api_key, timeout=60.0)  # 60 second timeout
         
         try:
             message = client.messages.create(
