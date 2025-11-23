@@ -338,7 +338,7 @@ async def get_version():
     version_info = {
         "service": "workout-ingestor-api",
         "build_timestamp": BUILD_TIMESTAMP,
-        "build_date": datetime.now().isoformat(),
+        "build_date": BUILD_TIMESTAMP,  # Use BUILD_TIMESTAMP instead of datetime.now() so it doesn't change on every request
     }
     
     if GIT_INFO:
