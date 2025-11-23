@@ -1303,9 +1303,13 @@ class ParserService:
                 sets = 1
         
         # Determine exercise type
-        ex_type = "strength"
-        if duration_sec or 'hold' in full_text.lower():
+        # Check for AMRAP first (before other type checks)
+        if amrap_sets_match or ('amrap' in full_text.lower() and not reps and not reps_range):
+            ex_type = "amrap"
+        elif duration_sec or 'hold' in full_text.lower():
             ex_type = "interval"
+        else:
+            ex_type = "strength"
         
         return Exercise(
             name=exercise_name,
