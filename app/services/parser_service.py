@@ -1134,11 +1134,14 @@ class ParserService:
         
         # Must contain exercise-related keywords or patterns
         exercise_keywords = [
-            r'\b(sets|reps|x|minutes?|sec|kg|lb|lbs?|weight|carry|press|row|pull|push|squat|deadlift|lunge|curl|raise|fly|extension|dip|pull.?up|pullup|bike|row|run|jump|burpee|thruster|swing|snatch|clean|jerk|wall.?ball|farmer|sled|push.?up|pushup|inchworm|circle|band|stretch|warm.?up)\b',
-            r'–|x\s*\d+',  # Contains dash or "x" followed by number
+            r'\b(sets|reps|x|minutes?|sec|kg|lb|lbs?|weight|carry|press|row|pull|push|squat|deadlift|lunge|curl|raise|fly|extension|dip|pull.?up|pullup|bike|row|run|jump|burpee|thruster|swing|snatch|clean|jerk|wall.?ball|farmer|sled|push.?up|pushup|inchworm|circle|band|stretch|warm.?up|amrap)\b',
+            r'[\s–\-]\s*\d+[x×]',  # Contains dash/en-dash followed by number and x/× (compact format)
+            r'[x×]\s*\d+',  # Contains x/× followed by number
         ]
         has_exercise_content = any(re.search(pattern, line, re.I) for pattern in exercise_keywords)
-        if not has_exercise_content and len(line) < 20:
+        # Also check for compact format pattern (NUMBER×NUMBER or NUMBER×AMRAP)
+        has_compact_format = re.search(r'\d+[x×]\s*(\d+[\s–\-]\d+|\d+|AMRAP)', line, re.I)
+        if not has_exercise_content and not has_compact_format and len(line) < 20:
             return None
         
         # Split by newline if present (sometimes equipment is on separate line)
