@@ -1271,11 +1271,14 @@ class ParserService:
         if amrap_match:
             reps_range = f"{amrap_match.group(1)}-{amrap_match.group(2)}"
         
-        # Pattern: "NUMBER×AMRAP" (e.g., "3×AMRAP") - sets with AMRAP type
+        # Pattern: "NUMBER×AMRAP" (e.g., "3×AMRAP") - sets with AMRAP as reps (special case)
         amrap_sets_match = re.search(r'(\d+)[x×]\s*AMRAP', full_text, re.I)
         if amrap_sets_match:
             if not sets:
                 sets = to_int(amrap_sets_match.group(1))
+            # AMRAP is the reps value (special case - means "as many reps as possible")
+            if not reps and not reps_range:
+                reps = "AMRAP"  # Store as string to indicate special rep type
             # Mark as AMRAP type exercise
             ex_type = "amrap"
         
