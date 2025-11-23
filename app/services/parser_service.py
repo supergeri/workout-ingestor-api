@@ -1277,8 +1277,9 @@ class ParserService:
             if not sets:
                 sets = to_int(amrap_sets_match.group(1))
             # AMRAP is the reps value (special case - means "as many reps as possible")
+            # Store in reps_range since it's a string field (reps is int)
             if not reps and not reps_range:
-                reps = "AMRAP"  # Store as string to indicate special rep type
+                reps_range = "AMRAP"
             # Mark as AMRAP type exercise
             ex_type = "amrap"
         
