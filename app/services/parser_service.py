@@ -1049,7 +1049,10 @@ class ParserService:
                 
                 # Extract exercise name and details
                 exercise = ParserService._parse_ai_exercise_line(full_exercise_text)
-                if exercise and current_block:
+                if exercise:
+                    # Create a default block if none exists
+                    if not current_block:
+                        current_block = Block(label="Workout")
                     pending_exercises.append(exercise)
                 
                 # Skip the lines we already processed
