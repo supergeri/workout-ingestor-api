@@ -875,10 +875,17 @@ class ParserService:
             emoji_section_match = re.match(r'^[🔥🏋️💥🧊🧘🎯]+(?:\s+)?(.+?)(?:\s*\([^)]+\))?:?$', line)
             
             # Check for plain text section headers ending with colon (e.g., "Warm-Up (10 min):", "Optional Finisher:")
+            # Also check for section headers that start with bullet point (e.g., "• Warm-up: description")
             # Must be relatively short and not contain exercise indicators
             colon_section_match = None
-            if len(line) < 80 and ':' in line:
-                match = re.match(r'^([A-Z][A-Za-z\s&/+-]+?)(?:\s*\([^)]+\))?:?$', line)
+            # Remove bullet point if present for section header detection
+            line_for_section_check = re.sub(r'^(?:•|\d+\.)\s+', '', line).strip()
+            if len(line_for_section_check) < 80 and ':' in line_for_section_check:
+                # Split on colon - section header is the part before colon (may have description after)
+                parts = line_for_section_check.split(':', 1)
+                header_part = parts[0].strip()
+                # Match section header pattern (may have parentheses)
+                match = re.match(r'^([A-Z][A-Za-z\s&/+-]+?)(?:\s*\([^)]+\))?$', header_part)
                 if match:
                     section_text = match.group(1).lower()
                     # Check if it's a known section header keyword
@@ -886,7 +893,13 @@ class ParserService:
                     is_section_keyword = any(keyword in section_text for keyword in section_keywords)
                     has_exercise_indicators = any(indicator in section_text for indicator in ['sets', 'reps', ' x ', '–', '-'])
                     if (is_section_keyword or not has_exercise_indicators) and len(section_text) > 3:
-                        colon_section_match = match
+                        # Create a match object that returns the section title
+                        class SectionMatch:
+                            def group(self, n):
+                                if n == 1:
+                                    return match.group(1)
+                                return header_part
+                        colon_section_match = SectionMatch()
             
             section_match = None
             if is_numbered_section:
