@@ -874,15 +874,18 @@ class ParserService:
             # Match one or more emojis followed by text (may or may not end with colon)
             emoji_section_match = re.match(r'^[🔥🏋️💥🧊🧘🎯]+(?:\s+)?(.+?)(?:\s*\([^)]+\))?:?$', line)
             
-            # Check for plain text section headers ending with colon (e.g., "Warm-Up (10 min):")
+            # Check for plain text section headers ending with colon (e.g., "Warm-Up (10 min):", "Optional Finisher:")
             # Must be relatively short and not contain exercise indicators
             colon_section_match = None
             if len(line) < 80 and ':' in line:
                 match = re.match(r'^([A-Z][A-Za-z\s&/+-]+?)(?:\s*\([^)]+\))?:?$', line)
                 if match:
                     section_text = match.group(1).lower()
+                    # Check if it's a known section header keyword
+                    section_keywords = ['warm-up', 'warmup', 'finisher', 'optional', 'cool-down', 'cooldown', 'primer']
+                    is_section_keyword = any(keyword in section_text for keyword in section_keywords)
                     has_exercise_indicators = any(indicator in section_text for indicator in ['sets', 'reps', ' x ', '–', '-'])
-                    if not has_exercise_indicators:
+                    if (is_section_keyword or not has_exercise_indicators) and len(section_text) > 3:
                         colon_section_match = match
             
             section_match = None
@@ -965,11 +968,15 @@ class ParserService:
             # Check for numbered exercise list items (e.g., "1. Exercise Name – 4 sets x 5–8 reps")
             is_numbered_exercise = re.match(r'^\d+\.\s+.+?[\s–\-](?:sets|reps|x)', line, re.I)
             
+            # Check for compact format like "Exercise – 4×6–8" or "Exercise – 3×AMRAP"
+            has_compact_format = re.search(r'[\s–\-]\s*\d+[x×]\s*(\d+[\s–\-]\d+|\d+|AMRAP)', line, re.I)
+            
             # Exercise lines should contain exercise-related keywords or patterns
             has_exercise_indicators = (
                 re.search(r'\b(sets|reps|x|minutes?|sec|kg|lb|lbs?|weight|carry|press|row|pull|push|squat|deadlift|lunge|curl|raise|fly|extension|dip|pull.?up)\b', line, re.I) or
                 is_numbered_exercise or
-                line.startswith('•')
+                line.startswith('•') or
+                has_compact_format
             )
             
             if (line.startswith('•') or is_numbered_exercise) or (has_exercise_indicators and line and len(line) > 10 and not line.startswith('(')):
@@ -1214,15 +1221,22 @@ class ParserService:
         # This prevents "x 5" from "4 sets x 5–8 reps" from being set as reps=5
         # Pattern: "6–8 reps" or "8-10 reps" or "4 sets x 5–8 reps" (rep ranges)
         if not reps and not reps_range:
-            # Priority 1: Look for "X sets x Y–Z" or "X sets x Y–Z reps" pattern (most specific)
-            sets_x_range_match = re.search(r'sets?\s*[x×]\s*(\d+)[\s–\-]+(\d+)(?:\s*reps?)?', full_text, re.I)
-            if sets_x_range_match:
-                reps_range = f"{sets_x_range_match.group(1)}-{sets_x_range_match.group(2)}"
+            # Priority 1: Look for "NUMBER×NUMBER–NUMBER" format (e.g., "4×6–8" or "3×10–12")
+            # This is sets × rep range format without "sets" keyword
+            compact_format_match = re.search(r'(\d+)[x×]\s*(\d+)[\s–\-]+(\d+)', full_text, re.I)
+            if compact_format_match:
+                sets = to_int(compact_format_match.group(1))
+                reps_range = f"{compact_format_match.group(2)}-{compact_format_match.group(3)}"
             else:
-                # Priority 2: Look for "Y–Z reps" pattern (with explicit "reps" keyword)
-                reps_range_match = re.search(r'(\d+)[\s–\-]+(\d+)\s*reps?', full_text, re.I)
-                if reps_range_match:
-                    reps_range = f"{reps_range_match.group(1)}-{reps_range_match.group(2)}"
+                # Priority 2: Look for "X sets x Y–Z" or "X sets x Y–Z reps" pattern (most specific)
+                sets_x_range_match = re.search(r'sets?\s*[x×]\s*(\d+)[\s–\-]+(\d+)(?:\s*reps?)?', full_text, re.I)
+                if sets_x_range_match:
+                    reps_range = f"{sets_x_range_match.group(1)}-{sets_x_range_match.group(2)}"
+                else:
+                    # Priority 3: Look for "Y–Z reps" pattern (with explicit "reps" keyword)
+                    reps_range_match = re.search(r'(\d+)[\s–\-]+(\d+)\s*reps?', full_text, re.I)
+                    if reps_range_match:
+                        reps_range = f"{reps_range_match.group(1)}-{reps_range_match.group(2)}"
         
         # Pattern: "x 20" or "x20" (single number after x) - determine if it's sets or reps
         # Only check if we haven't already found reps/rep_range from patterns above
@@ -1256,6 +1270,14 @@ class ParserService:
         amrap_match = re.search(r'AMRAP\s*\((\d+)[\s–\-](\d+)\s*target\)', full_text, re.I)
         if amrap_match:
             reps_range = f"{amrap_match.group(1)}-{amrap_match.group(2)}"
+        
+        # Pattern: "NUMBER×AMRAP" (e.g., "3×AMRAP") - sets with AMRAP type
+        amrap_sets_match = re.search(r'(\d+)[x×]\s*AMRAP', full_text, re.I)
+        if amrap_sets_match:
+            if not sets:
+                sets = to_int(amrap_sets_match.group(1))
+            # Mark as AMRAP type exercise
+            ex_type = "amrap"
         
         # Pattern: "/side" or "/side" - indicates unilateral exercise
         if '/side' in full_text.lower() or 'per side' in full_text.lower():
