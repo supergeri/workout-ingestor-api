@@ -1,7 +1,7 @@
 """Unit tests for parser service."""
 import pytest
-from app.models import Workout, Block, Exercise
-from app.services.parser_service import ParserService
+from workout_ingestor_api.models import Workout, Block, Exercise
+from workout_ingestor_api.services.parser_service import ParserService
 
 
 class TestParserService:

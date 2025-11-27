@@ -1,6 +1,6 @@
 """Unit tests for utility functions."""
 import pytest
-from app.utils import to_int, upper_from_range
+from workout_ingestor_api.utils import to_int, upper_from_range
 
 
 class TestUtils:

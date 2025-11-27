@@ -1,6 +1,6 @@
 """Unit tests for data models."""
 import pytest
-from app.models import Exercise, Superset, Block, Workout
+from workout_ingestor_api.models import Exercise, Superset, Block, Workout
 
 
 class TestModels:

@@ -1,7 +1,7 @@
 """Unit tests for OCR service."""
 import pytest
 from unittest.mock import Mock, patch, MagicMock
-from app.services.ocr_service import OCRService
+from workout_ingestor_api.services.ocr_service import OCRService
 
 
 class TestOCRService:

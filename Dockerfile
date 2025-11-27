@@ -20,8 +20,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Add src to Python path so workout_ingestor_api can be imported
+ENV PYTHONPATH=/app/src:${PYTHONPATH}
+
 # Expose port 8004
 EXPOSE 8004
 
 # Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8004", "--reload"]
+CMD ["uvicorn", "workout_ingestor_api.main:app", "--host", "0.0.0.0", "--port", "8004", "--reload"]

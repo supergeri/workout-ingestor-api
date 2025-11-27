@@ -1,7 +1,7 @@
 """Main FastAPI application."""
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import router
+from workout_ingestor_api.api.routes import router
 
 app = FastAPI(title="Workout Ingestor API")
 

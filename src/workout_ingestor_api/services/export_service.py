@@ -1,8 +1,8 @@
 """Export service for converting workouts to various formats."""
 import re
 from typing import Optional
-from app.models import Workout
-from app.utils import upper_from_range
+from workout_ingestor_api.models import Workout
+from workout_ingestor_api.utils import upper_from_range
 
 # FIT export (robust for fit-tool 0.9.13+)
 FitFileBuilder = None

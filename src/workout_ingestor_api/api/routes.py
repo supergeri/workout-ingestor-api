@@ -41,15 +41,15 @@ def get_git_info():
 
 GIT_INFO = get_git_info()
 
-from app.models import Workout, Block, Exercise
-from app.services.ocr_service import OCRService
-from app.services.parser_service import ParserService
-from app.services.video_service import VideoService
-from app.services.export_service import ExportService
-from app.services.instagram_service import InstagramService, InstagramServiceError
-from app.services.vision_service import VisionService
-from app.services.llm_service import LLMService
-from app.services.feedback_service import FeedbackService
+from workout_ingestor_api.models import Workout, Block, Exercise
+from workout_ingestor_api.services.ocr_service import OCRService
+from workout_ingestor_api.services.parser_service import ParserService
+from workout_ingestor_api.services.video_service import VideoService
+from workout_ingestor_api.services.export_service import ExportService
+from workout_ingestor_api.services.instagram_service import InstagramService, InstagramServiceError
+from workout_ingestor_api.services.vision_service import VisionService
+from workout_ingestor_api.services.llm_service import LLMService
+from workout_ingestor_api.services.feedback_service import FeedbackService
 
 router = APIRouter()
 
@@ -369,7 +369,7 @@ def create_empty_workout():
         - source: "manual"
         - blocks: Single empty block with label "Workout"
     """
-    from app.models import Workout, Block
+    from workout_ingestor_api.models import Workout, Block
     
     empty_workout = Workout(
         title="New Workout",
@@ -412,7 +412,7 @@ def get_wger_exercises():
     The exercises are cached on disk for 24 hours to avoid
     overloading WGER servers.
     """
-    from app.services.wger_service import get_all_exercises
+    from workout_ingestor_api.services.wger_service import get_all_exercises
     import traceback
     
     try:
@@ -724,7 +724,7 @@ async def ingest_image_vision(
                     model=model,
                     api_key=anthropic_api_key,
                 )
-                from app.services.llm_service import LLMService
+                from workout_ingestor_api.services.llm_service import LLMService
                 workout_dict = LLMService.structure_with_anthropic(text, model=model)
                 # Normalize structure values (e.g., "for time" -> "for-time")
                 for block in workout_dict.get("blocks", []):

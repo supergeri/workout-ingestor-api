@@ -9,7 +9,7 @@ PURPOSE
 
 USAGE
 -----
-1. Import: `from app.services.wger_service import get_all_exercises`
+1. Import: `from workout_ingestor_api.services.wger_service import get_all_exercises`
 2. Call: `exercises = await get_all_exercises()`
 3. This service:
    - Caches data to `.cache/wger-exercises.json` at project root

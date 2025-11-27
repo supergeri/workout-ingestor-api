@@ -1,7 +1,7 @@
 """Unit tests for export service."""
 import pytest
-from app.models import Workout, Block, Exercise, Superset
-from app.services.export_service import ExportService
+from workout_ingestor_api.models import Workout, Block, Exercise, Superset
+from workout_ingestor_api.services.export_service import ExportService
 
 
 class TestExportService:

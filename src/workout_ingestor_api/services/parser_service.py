@@ -2,13 +2,13 @@
 import re
 import json
 from typing import List, Optional, Union, Tuple, Any, Dict
-from app.models import Workout, Block, Exercise, Superset
-from app.utils import to_int
-from app.config import settings
+from workout_ingestor_api.models import Workout, Block, Exercise, Superset
+from workout_ingestor_api.utils import to_int
+from workout_ingestor_api.config import settings
 
 # Try to import feedback service (optional - won't fail if not available)
 try:
-    from app.services.feedback_service import FeedbackService
+    from workout_ingestor_api.services.feedback_service import FeedbackService
     FEEDBACK_AVAILABLE = True
 except ImportError:
     FEEDBACK_AVAILABLE = False
