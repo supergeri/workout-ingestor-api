@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import json
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 
 import re
 import requests
@@ -241,6 +241,32 @@ def _filter_transcript_for_workout(text: str) -> str:
         kept.append(ln)
 
     return "\n".join(kept)
+
+
+# ---------------------------------------------------------------------------
+# YouTube strategy inference helpers
+# ---------------------------------------------------------------------------
+
+def _infer_youtube_strategy_from_workout(workout_dict: Dict[str, Any]) -> str:
+    blocks: List[Dict[str, Any]] = workout_dict.get("blocks") or []
+    if not blocks:
+        return "no_blocks"
+
+    total_ex = 0
+    named_ex = 0
+
+    for block in blocks:
+        for ex in (block.get("exercises") or []):
+            total_ex += 1
+            name = (ex.get("name") or "").strip()
+            if name:
+                named_ex += 1
+
+    if named_ex == 0:
+        return "blocks_no_exercise_names"
+    if named_ex <= 3:
+        return "sparse_exercises"
+    return "baseline_youtube_ingest_v1" 
 
 
 # ---------------------------------------------------------------------------
@@ -746,7 +772,6 @@ async def export_fit(workout: Workout):
         media_type="application/octet-stream",
         headers={"Content-Disposition": 'attachment; filename="strength_workout.fit"'},
     )
-
 
 # ---------------------------------------------------------------------------
 # YouTube ingest – NEW logic
