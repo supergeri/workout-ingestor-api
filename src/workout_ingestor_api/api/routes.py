@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import json
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 import re
 import requests
