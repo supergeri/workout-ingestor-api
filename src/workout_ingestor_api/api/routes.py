@@ -99,33 +99,102 @@ class JunkPatternFeedback(BaseModel):
 # Helper functions
 # ---------------------------------------------------------------------------
 
+EXERCISE_KEYWORDS = [
+    "squat",
+    "lunges",
+    "lunge",
+    "press",
+    "bench",
+    "push-up",
+    "pushup",
+    "pull-up",
+    "pullup",
+    "row",
+    "deadlift",
+    "rdl",
+    "curl",
+    "extension",
+    "raise",
+    "plank",
+    "crunch",
+    "situp",
+    "sit-up",
+    "burpee",
+    "jumping jack",
+    "jumping jacks",
+    "mountain climber",
+    "kettlebell",
+    "dumbbell",
+    "barbell",
+    "hip thrust",
+    "step up",
+    "wall ball",
+    "sled",
+    "farmer carry",
+    "carry",
+    "run",
+    "jog",
+    "treadmill",
+    "push press",
+    "snatch",
+    "clean",
+]
+
+PROGRAMMING_KEYWORDS = [
+    "set",
+    "sets",
+    "rep",
+    "reps",
+    "round",
+    "rounds",
+    "interval",
+    "tabata",
+    "emom",
+    "amrap",
+    "for time",
+    "rest",
+    "recover",
+    "seconds",
+    "second",
+    "sec",
+    "minute",
+    "minutes",
+    "min",
+]
+
+NOISE_MARKERS = [
+    "[music",
+    "music]",
+    "music [",
+    "applause",
+    "[applause",
+    "applause]",
+    "[laughter",
+    "laughter]",
+]
+
 
 def _extract_youtube_id(url: Optional[str]) -> Optional[str]:
-    """Extract YouTube video ID from a full URL or a bare ID."""
     if not url:
         return None
 
     parsed = urlparse(url)
 
-    # youtu.be/<id>
     if parsed.hostname in {"youtu.be"}:
         video_id = parsed.path.lstrip("/")
         return video_id or None
 
-    # youtube.com/watch?v=<id> or embed URLs
     if parsed.hostname and "youtube" in parsed.hostname:
         query = parse_qs(parsed.query)
         if "v" in query and query["v"]:
             return query["v"][0]
 
-        # /embed/<id>
         parts = parsed.path.split("/")
         if "embed" in parts and len(parts) >= 3:
             idx = parts.index("embed")
             if idx + 1 < len(parts):
                 return parts[idx + 1] or None
 
-    # Already looks like an ID?
     if len(url) == 11 and " " not in url:
         return url
 
@@ -133,99 +202,12 @@ def _extract_youtube_id(url: Optional[str]) -> Optional[str]:
 
 
 def _filter_transcript_for_workout(text: str) -> str:
-    """
-    Heuristic filter to keep only workout-looking lines from a transcript.
-
-    This is deliberately strict to avoid turning lyrics into 'interval' exercises.
-    A line is kept only if:
-      - it does NOT contain music/applause markers
-      AND
-      - it has at least one digit OR
-      - it contains an obvious exercise keyword OR
-      - it contains a programming keyword (sets, reps, rounds, rest, etc.)
-    """
-
-    EXERCISE_KEYWORDS = [
-        "squat",
-        "lunges",
-        "lunge",
-        "press",
-        "bench",
-        "push-up",
-        "pushup",
-        "pull-up",
-        "pullup",
-        "row",
-        "deadlift",
-        "rdl",
-        "curl",
-        "extension",
-        "raise",
-        "plank",
-        "crunch",
-        "situp",
-        "sit-up",
-        "burpee",
-        "jumping jack",
-        "jumping jacks",
-        "mountain climber",
-        "kettlebell",
-        "dumbbell",
-        "barbell",
-        "hip thrust",
-        "step up",
-        "wall ball",
-        "sled",
-        "farmer carry",
-        "carry",
-        "run",
-        "jog",
-        "treadmill",
-        "push press",
-        "snatch",
-        "clean",
-    ]
-
-    PROGRAMMING_KEYWORDS = [
-        "set",
-        "sets",
-        "rep",
-        "reps",
-        "round",
-        "rounds",
-        "interval",
-        "tabata",
-        "emom",
-        "amrap",
-        "for time",
-        "rest",
-        "recover",
-        "seconds",
-        "second",
-        "sec",
-        "minute",
-        "minutes",
-        "min",
-    ]
-
-    NOISE_MARKERS = [
-        "[music",
-        "music]",
-        "music [",
-        "applause",
-        "[applause",
-        "applause]",
-        "[laughter",
-        "laughter]",
-    ]
-
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    kept: list[str] = []
+    kept: List[str] = []
 
     for ln in lines:
         lower = ln.lower()
 
-        # Skip obvious noise (music / applause / laughter)
         if any(marker in lower for marker in NOISE_MARKERS):
             continue
 
@@ -233,40 +215,18 @@ def _filter_transcript_for_workout(text: str) -> str:
         has_exercise_kw = any(kw in lower for kw in EXERCISE_KEYWORDS)
         has_programming_kw = any(kw in lower for kw in PROGRAMMING_KEYWORDS)
 
-        # STRICT filter: only keep if it looks at least a bit like a workout line
-        if not (has_digit or has_exercise_kw or has_programming_kw):
-            # Likely lyrics or random chatter
+        if not has_exercise_kw and not (has_digit and has_programming_kw):
             continue
+
+        if len(ln.split()) < 2:
+            continue
+
+        if len(ln) > 180:
+            ln = ln[:180]
 
         kept.append(ln)
 
     return "\n".join(kept)
-
-
-# ---------------------------------------------------------------------------
-# YouTube strategy inference helpers
-# ---------------------------------------------------------------------------
-
-def _infer_youtube_strategy_from_workout(workout_dict: Dict[str, Any]) -> str:
-    blocks: List[Dict[str, Any]] = workout_dict.get("blocks") or []
-    if not blocks:
-        return "no_blocks"
-
-    total_ex = 0
-    named_ex = 0
-
-    for block in blocks:
-        for ex in (block.get("exercises") or []):
-            total_ex += 1
-            name = (ex.get("name") or "").strip()
-            if name:
-                named_ex += 1
-
-    if named_ex == 0:
-        return "blocks_no_exercise_names"
-    if named_ex <= 3:
-        return "sparse_exercises"
-    return "baseline_youtube_ingest_v1" 
 
 
 # ---------------------------------------------------------------------------
