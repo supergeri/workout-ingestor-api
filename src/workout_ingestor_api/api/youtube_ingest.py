@@ -1,12 +1,16 @@
 """
 YouTube ingest implementation with LLM-powered parsing.
 Replaces regex-based parsing with intelligent LLM extraction.
+
+Includes caching support to avoid redundant API calls for previously
+processed videos.
 """
 
 import os
 import json
 import re
 import uuid
+import logging
 from typing import Optional, Dict, Any, List
 
 import requests
@@ -14,6 +18,14 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
 from workout_ingestor_api.models import Workout, Block, Exercise
+from workout_ingestor_api.services.url_normalizer import (
+    extract_youtube_video_id,
+    normalize_youtube_url,
+    parse_youtube_url,
+)
+from workout_ingestor_api.services.youtube_cache_service import YouTubeCacheService
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_youtube_id(url: Optional[str]) -> Optional[str]:
@@ -292,25 +304,72 @@ def _add_ids_to_workout(workout_dict: Dict) -> Dict:
     return workout_dict
 
 
-async def ingest_youtube_impl(video_url: str) -> JSONResponse:
+async def ingest_youtube_impl(video_url: str, user_id: Optional[str] = None, skip_cache: bool = False) -> JSONResponse:
     """
-    Core implementation for YouTube ingestion with LLM parsing.
-    
-    - Fetches transcript via youtube-transcript.io
+    Core implementation for YouTube ingestion with LLM parsing and caching.
+
+    - Checks cache first for previously processed videos
+    - If not cached, fetches transcript via youtube-transcript.io
     - Uses OpenAI or Anthropic to intelligently parse the workout
+    - Caches successful results for future lookups
     - Returns structured workout JSON
+
+    Args:
+        video_url: YouTube video URL
+        user_id: Optional user ID for tracking who ingested the workout
+        skip_cache: If True, bypass cache lookup (still saves to cache)
     """
 
     video_url = video_url.strip()
     if not video_url:
         raise HTTPException(status_code=400, detail="URL is required")
 
-    video_id = _extract_youtube_id(video_url)
+    # Use the new URL normalizer for consistent video ID extraction
+    video_id, normalized_url, original_url = parse_youtube_url(video_url)
+
+    if not video_id:
+        # Fall back to old extractor for backwards compatibility
+        video_id = _extract_youtube_id(video_url)
+        normalized_url = normalize_youtube_url(video_url) if video_id else None
+
     if not video_id:
         raise HTTPException(
             status_code=400,
             detail="Could not extract YouTube video ID from URL",
         )
+
+    # =========================================================================
+    # CACHE CHECK: Return cached workout if available
+    # =========================================================================
+    if not skip_cache:
+        cached = YouTubeCacheService.get_cached_workout(video_id)
+        if cached:
+            logger.info(f"Returning cached workout for video_id: {video_id}")
+
+            # Increment cache hit counter (non-blocking, fire-and-forget)
+            YouTubeCacheService.increment_cache_hit(video_id)
+
+            # Build response from cached data
+            workout_data = cached.get("workout_data", {})
+            video_metadata = cached.get("video_metadata", {})
+
+            # Ensure workout has required fields
+            if not workout_data.get("source"):
+                workout_data["source"] = video_url
+
+            response_payload = workout_data.copy()
+            response_payload.setdefault("_provenance", {})
+            response_payload["_provenance"].update({
+                "mode": "cached",
+                "source_url": video_url,
+                "video_id": video_id,
+                "cached_at": cached.get("ingested_at"),
+                "cache_hits": (cached.get("cache_hits", 0) or 0) + 1,
+                "original_processing_method": cached.get("processing_method"),
+                "video_duration_sec": video_metadata.get("duration_seconds"),
+            })
+
+            return JSONResponse(response_payload)
 
     # Get transcript API token
     api_token = os.getenv("YT_TRANSCRIPT_API_TOKEN")
@@ -547,5 +606,35 @@ async def ingest_youtube_impl(video_url: str) -> JSONResponse:
         "llm_provider": llm_provider,
         "video_duration_sec": video_duration_sec,
     })
+
+    # =========================================================================
+    # CACHE SAVE: Store successful workout for future lookups
+    # =========================================================================
+    if normalized_url and video_id:
+        try:
+            # Build video metadata for caching
+            video_metadata = {
+                "title": title,
+                "duration_seconds": video_duration_sec,
+                # Additional metadata can be added here when available
+                # "channel": channel_name,
+                # "thumbnail_url": thumbnail,
+                # "published_at": published_date,
+            }
+
+            # Save to cache (non-blocking, continues even if cache fails)
+            YouTubeCacheService.save_cached_workout(
+                video_id=video_id,
+                source_url=video_url,
+                normalized_url=normalized_url,
+                video_metadata=video_metadata,
+                workout_data=response_payload,
+                processing_method=f"llm_{llm_provider}",
+                ingested_by=user_id
+            )
+            logger.info(f"Cached workout for video_id: {video_id}")
+        except Exception as e:
+            # Cache save failure should not fail the request
+            logger.warning(f"Failed to cache workout for video_id {video_id}: {e}")
 
     return JSONResponse(response_payload)
