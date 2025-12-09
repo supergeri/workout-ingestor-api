@@ -81,6 +81,8 @@ router = APIRouter()
 
 class YouTubeTranscriptRequest(BaseModel):
     url: str
+    user_id: Optional[str] = None  # Optional user ID for tracking who ingested
+    skip_cache: bool = False  # If True, bypass cache lookup (still saves to cache)
 
 
 class InstagramTestRequest(BaseModel):
@@ -766,8 +768,58 @@ async def export_fit(workout: Workout):
 
 @router.post("/ingest/youtube")
 async def ingest_youtube(payload: YouTubeTranscriptRequest):
-    """Thin wrapper that delegates to youtube_ingest.ingest_youtube_impl."""
-    return await ingest_youtube_impl(payload.url)
+    """
+    Ingest workout from YouTube video with caching support.
+
+    - Checks cache first for previously processed videos
+    - If not cached, fetches transcript and processes with LLM
+    - Caches successful results for future lookups
+
+    Args:
+        payload.url: YouTube video URL
+        payload.user_id: Optional user ID for tracking who ingested
+        payload.skip_cache: If True, bypass cache lookup (still saves to cache)
+    """
+    return await ingest_youtube_impl(
+        video_url=payload.url,
+        user_id=payload.user_id,
+        skip_cache=payload.skip_cache
+    )
+
+
+@router.get("/youtube/cache/stats")
+async def get_youtube_cache_stats():
+    """
+    Get YouTube workout cache statistics.
+
+    Returns:
+        total_cached: Number of cached workouts
+        total_cache_hits: Total cache hits across all workouts
+    """
+    from workout_ingestor_api.services.youtube_cache_service import YouTubeCacheService
+
+    stats = YouTubeCacheService.get_cache_stats()
+    return JSONResponse(stats)
+
+
+@router.get("/youtube/cache/{video_id}")
+async def get_cached_youtube_workout(video_id: str):
+    """
+    Get a specific cached YouTube workout by video ID.
+
+    Args:
+        video_id: YouTube video ID (11 characters)
+
+    Returns:
+        Cached workout data or 404 if not found
+    """
+    from workout_ingestor_api.services.youtube_cache_service import YouTubeCacheService
+
+    cached = YouTubeCacheService.get_cached_workout(video_id)
+    if not cached:
+        raise HTTPException(status_code=404, detail="Workout not found in cache")
+
+    return JSONResponse(cached)
 
 
 # ---------------------------------------------------------------------------
