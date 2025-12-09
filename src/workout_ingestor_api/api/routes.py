@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import json
 from datetime import datetime
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 
 import re
 import requests
@@ -81,6 +81,8 @@ router = APIRouter()
 
 class YouTubeTranscriptRequest(BaseModel):
     url: str
+    user_id: Optional[str] = None  # Optional user ID for tracking who ingested
+    skip_cache: bool = False  # If True, bypass cache lookup (still saves to cache)
 
 
 class InstagramTestRequest(BaseModel):
@@ -766,8 +768,244 @@ async def export_fit(workout: Workout):
 
 @router.post("/ingest/youtube")
 async def ingest_youtube(payload: YouTubeTranscriptRequest):
-    """Thin wrapper that delegates to youtube_ingest.ingest_youtube_impl."""
-    return await ingest_youtube_impl(payload.url)
+    """
+    Ingest workout from YouTube video with caching support.
+
+    - Checks cache first for previously processed videos
+    - If not cached, fetches transcript and processes with LLM
+    - Caches successful results for future lookups
+
+    Args:
+        payload.url: YouTube video URL
+        payload.user_id: Optional user ID for tracking who ingested
+        payload.skip_cache: If True, bypass cache lookup (still saves to cache)
+    """
+    return await ingest_youtube_impl(
+        video_url=payload.url,
+        user_id=payload.user_id,
+        skip_cache=payload.skip_cache
+    )
+
+
+@router.get("/youtube/cache/stats")
+async def get_youtube_cache_stats():
+    """
+    Get YouTube workout cache statistics.
+
+    Returns:
+        total_cached: Number of cached workouts
+        total_cache_hits: Total cache hits across all workouts
+    """
+    from workout_ingestor_api.services.youtube_cache_service import YouTubeCacheService
+
+    stats = YouTubeCacheService.get_cache_stats()
+    return JSONResponse(stats)
+
+
+@router.get("/youtube/cache/{video_id}")
+async def get_cached_youtube_workout(video_id: str):
+    """
+    Get a specific cached YouTube workout by video ID.
+
+    Args:
+        video_id: YouTube video ID (11 characters)
+
+    Returns:
+        Cached workout data or 404 if not found
+    """
+    from workout_ingestor_api.services.youtube_cache_service import YouTubeCacheService
+
+    cached = YouTubeCacheService.get_cached_workout(video_id)
+    if not cached:
+        raise HTTPException(status_code=404, detail="Workout not found in cache")
+
+    return JSONResponse(cached)
+
+
+# ---------------------------------------------------------------------------
+# Video URL Detection & oEmbed (Multi-platform)
+# ---------------------------------------------------------------------------
+
+class VideoUrlRequest(BaseModel):
+    url: str
+
+
+class VideoOEmbedRequest(BaseModel):
+    url: str
+    platform: Optional[str] = None  # Optional: youtube, instagram, tiktok
+
+
+class VideoSaveRequest(BaseModel):
+    url: str
+    workout_data: Optional[Dict[str, Any]] = None  # Manual exercise entries
+    user_id: Optional[str] = None
+    save_mode: str = "full"  # "full" or "bookmark"
+
+
+@router.post("/video/detect")
+async def detect_video_platform(payload: VideoUrlRequest):
+    """
+    Detect the platform and extract video ID from a URL.
+
+    Returns platform info and normalized URL for any supported video platform.
+    """
+    from workout_ingestor_api.services.video_url_normalizer import parse_video_url
+
+    url_info = parse_video_url(payload.url)
+
+    return JSONResponse({
+        "platform": url_info.platform,
+        "video_id": url_info.video_id,
+        "normalized_url": url_info.normalized_url,
+        "original_url": url_info.original_url,
+        "post_type": url_info.post_type,
+        "supported": url_info.platform != "unknown",
+    })
+
+
+@router.post("/video/oembed")
+async def fetch_video_oembed(payload: VideoOEmbedRequest):
+    """
+    Fetch oEmbed metadata for a video URL.
+
+    Supports YouTube, Instagram, and TikTok.
+    Returns thumbnail, title, author, and embed HTML.
+    """
+    from workout_ingestor_api.services.oembed_service import OEmbedService
+    from workout_ingestor_api.services.video_url_normalizer import detect_platform
+
+    platform = payload.platform or detect_platform(payload.url)
+    result = OEmbedService.fetch_oembed(payload.url, platform)
+
+    return JSONResponse(result.to_dict())
+
+
+@router.post("/video/cache/check")
+async def check_video_cache(payload: VideoUrlRequest):
+    """
+    Check if a video URL is already cached.
+
+    Returns cached data if found, or indicates cache miss.
+    """
+    from workout_ingestor_api.services.video_url_normalizer import parse_video_url
+    from workout_ingestor_api.services.video_cache_service import VideoCacheService
+
+    url_info = parse_video_url(payload.url)
+
+    if url_info.platform == "unknown" or not url_info.video_id:
+        return JSONResponse({
+            "cached": False,
+            "error": "Unsupported or invalid video URL"
+        })
+
+    cached = VideoCacheService.get_cached_video(url_info.video_id, url_info.platform)
+
+    if cached:
+        # Increment hit counter in background
+        VideoCacheService.increment_cache_hit(url_info.video_id, url_info.platform)
+
+        return JSONResponse({
+            "cached": True,
+            "data": cached,
+            "platform": url_info.platform,
+            "video_id": url_info.video_id,
+        })
+
+    return JSONResponse({
+        "cached": False,
+        "platform": url_info.platform,
+        "video_id": url_info.video_id,
+        "normalized_url": url_info.normalized_url,
+    })
+
+
+@router.post("/video/cache/save")
+async def save_video_to_cache(payload: VideoSaveRequest):
+    """
+    Save a video and its workout data to the cache.
+
+    This endpoint is used for manual exercise entry (Instagram flow)
+    where the user adds exercises themselves after seeing the oEmbed preview.
+    """
+    from workout_ingestor_api.services.video_url_normalizer import parse_video_url
+    from workout_ingestor_api.services.video_cache_service import VideoCacheService
+    from workout_ingestor_api.services.oembed_service import OEmbedService
+
+    url_info = parse_video_url(payload.url)
+
+    if url_info.platform == "unknown" or not url_info.video_id:
+        raise HTTPException(status_code=400, detail="Unsupported or invalid video URL")
+
+    # Fetch oEmbed data
+    oembed = OEmbedService.fetch_oembed(payload.url, url_info.platform)
+
+    # Prepare workout data
+    workout_data = payload.workout_data or {}
+    if payload.save_mode == "bookmark":
+        workout_data["is_bookmark"] = True
+        workout_data["exercises"] = []
+
+    # Determine processing method
+    processing_method = "manual_with_oembed" if oembed.success else "manual_no_oembed"
+
+    # Save to cache
+    saved = VideoCacheService.save_cached_video(
+        video_id=url_info.video_id,
+        platform=url_info.platform,
+        source_url=url_info.original_url,
+        normalized_url=url_info.normalized_url,
+        oembed_data=oembed.to_dict() if oembed.success else {"success": False, "error": oembed.error},
+        video_metadata={"post_type": url_info.post_type},
+        workout_data=workout_data,
+        processing_method=processing_method,
+        ingested_by=payload.user_id,
+    )
+
+    if saved:
+        return JSONResponse({
+            "success": True,
+            "message": "Video saved to cache",
+            "data": saved,
+        })
+
+    raise HTTPException(status_code=500, detail="Failed to save video to cache")
+
+
+@router.get("/video/cache/stats")
+async def get_video_cache_stats():
+    """
+    Get video cache statistics across all platforms.
+
+    Returns total cached, total hits, and breakdown by platform.
+    """
+    from workout_ingestor_api.services.video_cache_service import VideoCacheService
+
+    stats = VideoCacheService.get_cache_stats()
+    return JSONResponse(stats)
+
+
+@router.get("/video/cache/{platform}/{video_id}")
+async def get_cached_video(platform: str, video_id: str):
+    """
+    Get a specific cached video by platform and video ID.
+
+    Args:
+        platform: Video platform (youtube, instagram, tiktok)
+        video_id: Platform-specific video ID
+
+    Returns:
+        Cached video data or 404 if not found
+    """
+    from workout_ingestor_api.services.video_cache_service import VideoCacheService
+
+    if platform not in ("youtube", "instagram", "tiktok"):
+        raise HTTPException(status_code=400, detail="Invalid platform")
+
+    cached = VideoCacheService.get_cached_video(video_id, platform)
+    if not cached:
+        raise HTTPException(status_code=404, detail="Video not found in cache")
+
+    return JSONResponse(cached)
 
 
 # ---------------------------------------------------------------------------
