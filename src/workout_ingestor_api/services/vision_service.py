@@ -25,31 +25,31 @@ except ImportError:
 class VisionService:
     """Service for using vision models to extract workout data from images."""
     
-    WORKOUT_EXTRACTION_PROMPT = """CRITICAL: Extract ONLY the workout information that is ACTUALLY VISIBLE in these images. 
+    WORKOUT_EXTRACTION_PROMPT = """IMPORTANT: These images are sequential frames from a workout video. Exercises are shown one at a time across different frames.
 
-DO NOT invent, guess, or make up exercises that are not clearly visible in the images.
+YOUR TASK: Look at EVERY image and extract ALL exercises visible across ALL frames. Combine everything into one complete workout list.
 
-Look carefully at each image and extract ONLY what you can actually see:
-- Exercise names (EXACTLY as written/spelled in the images - do NOT interpret abbreviations as full names)
-- Sets and reps numbers (ONLY if clearly visible)
-- Weights/loads (ONLY if clearly visible)
-- Time intervals (ONLY if clearly visible)
-- Rest periods (ONLY if clearly visible)
-- Structure information (ONLY if clearly visible in the images)
+DO NOT stop after the first few exercises - scan through ALL provided images to find EVERY exercise shown.
+
+For each exercise you find, extract:
+- Exercise names (EXACTLY as written/spelled in the images)
+- Sets and reps numbers (if visible)
+- Weights/loads (if visible)
+- Time intervals (if visible)
+- Rest periods (if visible)
 
 CRITICAL RULES:
-1. Extract text EXACTLY as written in the images - preserve spelling, capitalization, abbreviations
-2. If an exercise name is abbreviated (e.g., "BS"), write it as "BS" - do NOT expand to "Back Squat" unless that's literally what the image says
-3. If text is unclear or partially visible, write what you can see (e.g., "Jumpi..." not "Jumping Jacks")
-4. If you cannot clearly see workout information in an image, do NOT make up generic exercises
-5. If an image appears to be blank, has no text, or is too blurry to read, say so
-6. Do NOT use common workout terminology unless it's literally written in the image
+1. Look at EVERY image - exercises appear in different frames throughout the video
+2. Extract text EXACTLY as written - preserve spelling, capitalization, abbreviations
+3. If an exercise name is abbreviated (e.g., "BS"), write it as "BS" - do NOT expand unless the full name is visible
+4. Combine all exercises from all frames into one complete list
+5. Do NOT make up exercises - only extract what's actually visible
+6. If the same exercise appears in multiple frames, include it only once
 
-Return a detailed description of what you can ACTUALLY SEE in each image, including:
-- Any text that is visible (even if unclear)
-- Exercise names as written (even if abbreviated or stylized)
-- Numbers that are visible
-- Any workout structure that is clearly written"""
+Return a complete list of ALL exercises visible across ALL images, including:
+- Every exercise name found (in order of appearance)
+- Any numbers, sets, reps, or timing visible
+- Any workout structure information visible"""
 
     WORKOUT_STRUCTURE_PROMPT = """You are a fitness workout parser. Convert the EXTRACTED workout text (from the images) into structured JSON format.
 
@@ -134,6 +134,37 @@ Return ONLY valid JSON matching the format above, no additional text or explanat
         """Convert image file to base64 string for API."""
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode('utf-8')
+
+    @staticmethod
+    def image_to_base64_resized(image_path: str, max_size: int = 1024, quality: int = 75) -> tuple[str, str]:
+        """
+        Convert image to base64, resizing if needed to reduce file size.
+
+        Args:
+            image_path: Path to image file
+            max_size: Maximum dimension (width or height) in pixels
+            quality: JPEG quality (1-100)
+
+        Returns:
+            Tuple of (base64_string, format_string)
+        """
+        with Image.open(image_path) as img:
+            # Convert to RGB if needed (for PNG with transparency)
+            if img.mode in ('RGBA', 'P'):
+                img = img.convert('RGB')
+
+            # Resize if larger than max_size
+            if max(img.size) > max_size:
+                ratio = max_size / max(img.size)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+            # Save to bytes as JPEG for better compression
+            buffer = io.BytesIO()
+            img.save(buffer, format='JPEG', quality=quality, optimize=True)
+            buffer.seek(0)
+
+            return base64.b64encode(buffer.read()).decode('utf-8'), 'jpeg'
 
     @staticmethod
     def extract_text_from_images_openai(
@@ -247,31 +278,32 @@ Return ONLY valid JSON matching the format above, no additional text or explanat
         
         client = openai.OpenAI(api_key=api_key)
         
-        # Prepare image content for API
+        # Prepare image content for API - resize images to stay under 50MB limit
         image_content = []
         for image_path in image_paths:
-            base64_image = VisionService.image_to_base64(image_path)
-            with Image.open(image_path) as img:
-                img_format = img.format.lower() or "jpeg"
-            
+            # Use resized images to reduce total size (25 frames * 2MB = 50MB limit)
+            base64_image, img_format = VisionService.image_to_base64_resized(
+                image_path, max_size=1024, quality=70
+            )
+
             image_content.append({
                 "type": "image_url",
                 "image_url": {
                     "url": f"data:image/{img_format};base64,{base64_image}"
                 }
             })
-        
+
         # Combine prompts with clear separation
         combined_prompt = f"""{VisionService.WORKOUT_EXTRACTION_PROMPT}
 
 {VisionService.WORKOUT_STRUCTURE_PROMPT}
 
-FINAL REMINDER: 
-- Extract ONLY what you can ACTUALLY SEE in the images
-- Do NOT invent or make up exercises
-- If images are blank, blurry, or contain no readable workout text, return empty workout structure
-- Use exercise names EXACTLY as written in images (preserve abbreviations, don't expand them)
-- If you cannot clearly see workout data, return empty blocks array rather than guessing"""
+FINAL REMINDER:
+- Look at EVERY image - these are sequential frames, exercises appear throughout
+- Extract ALL exercises visible across ALL frames - do not stop early
+- Do NOT invent or make up exercises - only extract what's visible
+- Use exercise names EXACTLY as written in images (preserve abbreviations)
+- Combine all exercises from all frames into one complete workout"""
         
         try:
             response = client.chat.completions.create(
