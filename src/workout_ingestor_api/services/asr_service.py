@@ -145,6 +145,60 @@ class ASRService:
             )
     
     @staticmethod
+    def transcribe_with_openai_api(
+        audio_path: str,
+        api_key: Optional[str] = None
+    ) -> Dict:
+        """
+        Transcribe audio using OpenAI's Whisper API (cloud).
+
+        This is the easiest option - no local model installation required.
+        Uses the same OPENAI_API_KEY as other services.
+
+        Args:
+            audio_path: Path to audio file (mp3, mp4, wav, m4a, webm supported)
+            api_key: OpenAI API key (uses OPENAI_API_KEY env var if not provided)
+
+        Returns:
+            Dict with transcript text
+        """
+        try:
+            import openai
+        except ImportError:
+            raise HTTPException(
+                status_code=500,
+                detail="OpenAI library not installed. Run: pip install openai"
+            )
+
+        api_key = api_key or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise HTTPException(
+                status_code=500,
+                detail="OpenAI API key not configured. Set OPENAI_API_KEY environment variable."
+            )
+
+        client = openai.OpenAI(api_key=api_key)
+
+        try:
+            with open(audio_path, "rb") as audio_file:
+                response = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    response_format="text"
+                )
+
+            return {
+                "text": response,
+                "segments": [],
+                "language": "en",
+            }
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"OpenAI Whisper API transcription failed: {e}"
+            )
+
+    @staticmethod
     def transcribe_with_api(
         audio_path: str,
         provider: str = "deepgram",
@@ -152,14 +206,14 @@ class ASRService:
     ) -> Dict:
         """
         Transcribe audio using cloud ASR API.
-        
+
         Supported providers: deepgram, assemblyai, google, aws
-        
+
         Args:
             audio_path: Path to audio file
             provider: ASR provider name
             api_key: API key for the provider
-            
+
         Returns:
             Dict with transcript segments
         """

@@ -823,62 +823,110 @@ async def get_cached_youtube_workout(video_id: str):
 
 
 # ---------------------------------------------------------------------------
-# TikTok ingest with Vision AI support
+# TikTok ingest with Audio Transcription + Vision AI support
 # ---------------------------------------------------------------------------
 
 @router.post("/ingest/tiktok")
 async def ingest_tiktok(payload: TikTokIngestRequest):
-    """Ingest workout from TikTok video using Vision AI only."""
+    """Ingest workout from TikTok video using audio transcription (primary) + vision (fallback)."""
+    from workout_ingestor_api.services.asr_service import ASRService
+    from workout_ingestor_api.api.youtube_ingest import _parse_with_openai
+
     url = payload.url
-    
+
     if not TikTokService.is_tiktok_url(url):
         raise HTTPException(status_code=400, detail="Invalid TikTok URL")
-    
+
     tmpdir = tempfile.mkdtemp(prefix="tiktok_ingest_")
-    
+
     try:
         metadata = TikTokService.extract_metadata(url)
-        
+
         video_path = TikTokService.download_video(url, tmpdir)
         if not video_path:
             raise HTTPException(status_code=400, detail="Could not download video")
-        
-        VideoService.sample_frames(video_path, tmpdir, fps=0.2, max_secs=30)
-        
-        frame_files = sorted([
-            os.path.join(tmpdir, f) for f in os.listdir(tmpdir)
-            if f.endswith('.png')
-        ])[:5]
-        
+
         api_key = os.getenv("OPENAI_API_KEY")
-        
-        workout_dict = VisionService.extract_and_structure_workout_openai(
-            frame_files, model="gpt-4o-mini", api_key=api_key
-        )
-        
+        workout_dict = None
+        mode = "tiktok_vision"
+
+        # Try audio transcription first (like YouTube - 95% accuracy)
+        try:
+            audio_path = ASRService.extract_audio(video_path)
+            transcript_result = ASRService.transcribe_with_openai_api(audio_path, api_key)
+            transcript = transcript_result.get("text", "")
+
+            if transcript and len(transcript) > 50:  # Meaningful transcript
+                # Use the same LLM parsing as YouTube
+                title = metadata.title or "TikTok Workout"
+                workout_dict = _parse_with_openai(transcript, title)
+                mode = "tiktok_transcript"
+
+            # Clean up audio file
+            if os.path.exists(audio_path):
+                os.remove(audio_path)
+        except Exception as e:
+            # Audio transcription failed, will fall back to vision
+            pass
+
+        # Check if transcript parsing found any actual exercises
+        def has_exercises(wd):
+            if not wd or not wd.get("blocks"):
+                return False
+            for block in wd.get("blocks", []):
+                if block.get("exercises") and len(block.get("exercises", [])) > 0:
+                    return True
+            return False
+
+        # Fall back to vision if transcript didn't find exercises
+        if not has_exercises(workout_dict):
+            # Use lower fps to spread frames across the entire video
+            # 0.5fps (1 frame every 2 seconds) for up to 180 seconds = max 90 frames
+            VideoService.sample_frames(video_path, tmpdir, fps=0.5, max_secs=180)
+
+            all_frames = sorted([
+                os.path.join(tmpdir, f) for f in os.listdir(tmpdir)
+                if f.endswith('.png')
+            ])
+
+            # Sample evenly across the entire video (not just first N frames)
+            # This ensures we capture exercises at the end of the video too
+            max_frames = 25  # Limited by OpenAI token limits
+            if len(all_frames) <= max_frames:
+                frame_files = all_frames
+            else:
+                # Take evenly spaced frames from start to end
+                step = len(all_frames) / max_frames
+                frame_files = [all_frames[int(i * step)] for i in range(max_frames)]
+
+            # Use gpt-4o for better vision capabilities
+            workout_dict = VisionService.extract_and_structure_workout_openai(
+                frame_files, model="gpt-4o", api_key=api_key
+            )
+            mode = "tiktok_vision"
+
         for block in workout_dict.get("blocks", []):
             block["structure"] = block.get("structure") or "regular"
             for ex in block.get("exercises", []):
                 ex["type"] = ex.get("type") or "strength"
-        
+
         workout_dict["title"] = workout_dict.get("title") or metadata.title or "TikTok Workout"
         workout = Workout(**workout_dict)
         workout.source = url
-        
+
         if metadata.title:
             clean_title = re.sub(r'#\w+\s*', '', metadata.title).strip()
             if clean_title and (not workout.title or workout.title == "Imported Workout"):
                 workout.title = clean_title[:80]
-        
+
         response = workout.convert_to_new_structure().model_dump()
         response["_provenance"] = {
-            "mode": "tiktok_vision",
+            "mode": mode,
             "video_id": metadata.video_id,
             "author": metadata.author_name,
-            "frames": len(frame_files)
         }
         return JSONResponse(response)
-        
+
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
