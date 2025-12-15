@@ -96,6 +96,7 @@ class TikTokIngestRequest(BaseModel):
     use_vision: bool = True  # Use GPT-4o Vision by default
     vision_provider: str = "openai"
     vision_model: Optional[str] = "gpt-4o-mini"
+    mode: str = "auto"  # "auto" | "hybrid" | "audio_only" | "vision_only"
 
 
 class NotWorkoutFeedback(BaseModel):
@@ -826,13 +827,126 @@ async def get_cached_youtube_workout(video_id: str):
 # TikTok ingest with Audio Transcription + Vision AI support
 # ---------------------------------------------------------------------------
 
+
+def _normalize_exercise_name(name: str) -> str:
+    """Normalize exercise name for matching (lowercase, remove extra spaces)."""
+    return re.sub(r'\s+', ' ', name.lower().strip())
+
+
+def _merge_audio_and_vision_workouts(audio_dict: Dict, vision_dict: Dict) -> Dict:
+    """
+    Merge audio transcription and vision extraction results.
+
+    Strategy:
+    - Audio gives us: detailed notes/tips from narration
+    - Vision gives us: on-screen reps, sets, exercise names
+
+    We use audio as the base (better notes) and supplement with vision data
+    for reps/sets when audio doesn't have them.
+    """
+    if not audio_dict or not audio_dict.get("blocks"):
+        return vision_dict
+    if not vision_dict or not vision_dict.get("blocks"):
+        return audio_dict
+
+    # Build a lookup of vision exercises by normalized name
+    vision_exercises = {}
+    for block in vision_dict.get("blocks", []):
+        for ex in block.get("exercises", []):
+            name = ex.get("name", "")
+            if name:
+                norm_name = _normalize_exercise_name(name)
+                vision_exercises[norm_name] = ex
+
+    # Merge: use audio as base, supplement with vision reps/sets
+    merged_blocks = []
+    for audio_block in audio_dict.get("blocks", []):
+        merged_exercises = []
+        for audio_ex in audio_block.get("exercises", []):
+            merged_ex = dict(audio_ex)  # Copy audio exercise
+            audio_name = audio_ex.get("name", "")
+
+            # Try to find matching vision exercise
+            norm_name = _normalize_exercise_name(audio_name)
+            vision_ex = vision_exercises.get(norm_name)
+
+            # Also try partial matches (e.g., "Incline Press" matches "Incline Smith Machine Press")
+            if not vision_ex:
+                for vname, vex in vision_exercises.items():
+                    # Check if either name contains the other
+                    if norm_name in vname or vname in norm_name:
+                        vision_ex = vex
+                        break
+                    # Check word overlap
+                    audio_words = set(norm_name.split())
+                    vision_words = set(vname.split())
+                    overlap = audio_words & vision_words
+                    if len(overlap) >= 2:  # At least 2 words in common
+                        vision_ex = vex
+                        break
+
+            if vision_ex:
+                # Supplement with vision data if audio is missing it
+                if merged_ex.get("reps") is None and vision_ex.get("reps") is not None:
+                    merged_ex["reps"] = vision_ex["reps"]
+                if merged_ex.get("reps_range") is None and vision_ex.get("reps_range") is not None:
+                    merged_ex["reps_range"] = vision_ex["reps_range"]
+                if merged_ex.get("sets") is None and vision_ex.get("sets") is not None:
+                    merged_ex["sets"] = vision_ex["sets"]
+                if merged_ex.get("duration_sec") is None and vision_ex.get("duration_sec") is not None:
+                    merged_ex["duration_sec"] = vision_ex["duration_sec"]
+                if merged_ex.get("distance_m") is None and vision_ex.get("distance_m") is not None:
+                    merged_ex["distance_m"] = vision_ex["distance_m"]
+
+            merged_exercises.append(merged_ex)
+
+        merged_block = dict(audio_block)
+        merged_block["exercises"] = merged_exercises
+        merged_blocks.append(merged_block)
+
+    result = dict(audio_dict)
+    result["blocks"] = merged_blocks
+    return result
+
+
+def _extract_frames_for_vision(video_path: str, tmpdir: str) -> List[str]:
+    """Extract and select frames for vision analysis."""
+    # Use lower fps to spread frames across the entire video
+    # 0.5fps (1 frame every 2 seconds) for up to 180 seconds = max 90 frames
+    VideoService.sample_frames(video_path, tmpdir, fps=0.5, max_secs=180)
+
+    all_frames = sorted([
+        os.path.join(tmpdir, f) for f in os.listdir(tmpdir)
+        if f.endswith('.png')
+    ])
+
+    # Sample evenly across the entire video (not just first N frames)
+    # This ensures we capture exercises at the end of the video too
+    max_frames = 25  # Limited by OpenAI token limits
+    if len(all_frames) <= max_frames:
+        return all_frames
+    else:
+        # Take evenly spaced frames from start to end
+        step = len(all_frames) / max_frames
+        return [all_frames[int(i * step)] for i in range(max_frames)]
+
+
 @router.post("/ingest/tiktok")
 async def ingest_tiktok(payload: TikTokIngestRequest):
-    """Ingest workout from TikTok video using audio transcription (primary) + vision (fallback)."""
+    """
+    Ingest workout from TikTok video.
+
+    Modes:
+    - "auto" (default): Audio transcription first, vision fallback if no exercises found
+    - "hybrid": Run both audio AND vision, merge results (best for on-screen text + narration)
+    - "audio_only": Only use audio transcription
+    - "vision_only": Only use vision frame analysis
+    """
     from workout_ingestor_api.services.asr_service import ASRService
     from workout_ingestor_api.api.youtube_ingest import _parse_with_openai
 
     url = payload.url
+    ingest_mode = payload.mode
 
     if not TikTokService.is_tiktok_url(url):
         raise HTTPException(status_code=400, detail="Invalid TikTok URL")
@@ -847,29 +961,11 @@ async def ingest_tiktok(payload: TikTokIngestRequest):
             raise HTTPException(status_code=400, detail="Could not download video")
 
         api_key = os.getenv("OPENAI_API_KEY")
-        workout_dict = None
+        audio_dict = None
+        vision_dict = None
         mode = "tiktok_vision"
 
-        # Try audio transcription first (like YouTube - 95% accuracy)
-        try:
-            audio_path = ASRService.extract_audio(video_path)
-            transcript_result = ASRService.transcribe_with_openai_api(audio_path, api_key)
-            transcript = transcript_result.get("text", "")
-
-            if transcript and len(transcript) > 50:  # Meaningful transcript
-                # Use the same LLM parsing as YouTube
-                title = metadata.title or "TikTok Workout"
-                workout_dict = _parse_with_openai(transcript, title)
-                mode = "tiktok_transcript"
-
-            # Clean up audio file
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
-        except Exception as e:
-            # Audio transcription failed, will fall back to vision
-            pass
-
-        # Check if transcript parsing found any actual exercises
+        # Helper to check if workout has exercises
         def has_exercises(wd):
             if not wd or not wd.get("blocks"):
                 return False
@@ -878,33 +974,61 @@ async def ingest_tiktok(payload: TikTokIngestRequest):
                     return True
             return False
 
-        # Fall back to vision if transcript didn't find exercises
-        if not has_exercises(workout_dict):
-            # Use lower fps to spread frames across the entire video
-            # 0.5fps (1 frame every 2 seconds) for up to 180 seconds = max 90 frames
-            VideoService.sample_frames(video_path, tmpdir, fps=0.5, max_secs=180)
+        # --- Audio Transcription ---
+        if ingest_mode in ("auto", "hybrid", "audio_only"):
+            try:
+                audio_path = ASRService.extract_audio(video_path)
+                transcript_result = ASRService.transcribe_with_openai_api(audio_path, api_key)
+                transcript = transcript_result.get("text", "")
 
-            all_frames = sorted([
-                os.path.join(tmpdir, f) for f in os.listdir(tmpdir)
-                if f.endswith('.png')
-            ])
+                if transcript and len(transcript) > 50:  # Meaningful transcript
+                    # Use the same LLM parsing as YouTube
+                    title = metadata.title or "TikTok Workout"
+                    audio_dict = _parse_with_openai(transcript, title)
 
-            # Sample evenly across the entire video (not just first N frames)
-            # This ensures we capture exercises at the end of the video too
-            max_frames = 25  # Limited by OpenAI token limits
-            if len(all_frames) <= max_frames:
-                frame_files = all_frames
-            else:
-                # Take evenly spaced frames from start to end
-                step = len(all_frames) / max_frames
-                frame_files = [all_frames[int(i * step)] for i in range(max_frames)]
+                # Clean up audio file
+                if os.path.exists(audio_path):
+                    os.remove(audio_path)
+            except Exception as e:
+                # Audio transcription failed
+                if ingest_mode == "audio_only":
+                    raise HTTPException(status_code=500, detail=f"Audio transcription failed: {e}")
 
-            # Use gpt-4o for better vision capabilities
-            workout_dict = VisionService.extract_and_structure_workout_openai(
-                frame_files, model="gpt-4o", api_key=api_key
-            )
+        # --- Vision Analysis ---
+        run_vision = (
+            ingest_mode == "vision_only" or
+            ingest_mode == "hybrid" or
+            (ingest_mode == "auto" and not has_exercises(audio_dict))
+        )
+
+        if run_vision:
+            frame_files = _extract_frames_for_vision(video_path, tmpdir)
+            if frame_files:
+                # Use gpt-4o for better vision capabilities
+                vision_dict = VisionService.extract_and_structure_workout_openai(
+                    frame_files, model="gpt-4o", api_key=api_key
+                )
+
+        # --- Determine final workout and mode ---
+        if ingest_mode == "hybrid" and has_exercises(audio_dict) and has_exercises(vision_dict):
+            # Merge audio and vision results
+            workout_dict = _merge_audio_and_vision_workouts(audio_dict, vision_dict)
+            mode = "tiktok_hybrid"
+        elif ingest_mode == "audio_only" or (ingest_mode == "auto" and has_exercises(audio_dict)):
+            workout_dict = audio_dict
+            mode = "tiktok_transcript"
+        elif has_exercises(vision_dict):
+            workout_dict = vision_dict
             mode = "tiktok_vision"
+        elif has_exercises(audio_dict):
+            workout_dict = audio_dict
+            mode = "tiktok_transcript"
+        else:
+            # No exercises found from either source
+            workout_dict = {"title": metadata.title or "TikTok Workout", "blocks": []}
+            mode = "tiktok_empty"
 
+        # Post-process
         for block in workout_dict.get("blocks", []):
             block["structure"] = block.get("structure") or "regular"
             for ex in block.get("exercises", []):
