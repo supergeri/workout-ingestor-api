@@ -11,6 +11,7 @@ class Exercise(BaseModel):
     reps_range: Optional[str] = None
     duration_sec: Optional[int] = None
     rest_sec: Optional[int] = None  # Rest after this exercise (only used in 'regular' structure)
+    rest_type: Optional[str] = None  # 'timed' or 'button' for rest between sets
     distance_m: Optional[int] = None
     distance_range: Optional[str] = None
     type: str = "strength"
@@ -18,7 +19,10 @@ class Exercise(BaseModel):
     # Video timestamp fields for follow-along mode
     video_start_sec: Optional[int] = None  # When this exercise starts in the source video
     video_end_sec: Optional[int] = None  # When this exercise ends in the source video
-    
+    # Warm-up sets (AMA-94)
+    warmup_sets: Optional[int] = None  # Number of warm-up sets before working sets
+    warmup_reps: Optional[int] = None  # Reps per warm-up set
+
     class Config:
         extra = "ignore"  # Ignore extra fields like 'id' from UI
 
