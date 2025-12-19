@@ -2,6 +2,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from workout_ingestor_api.api.routes import router
+from workout_ingestor_api.api.bulk_import_routes import router as bulk_import_router
 
 app = FastAPI(title="Workout Ingestor API")
 
@@ -15,4 +16,5 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(bulk_import_router)
 
