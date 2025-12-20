@@ -37,6 +37,14 @@ from workout_ingestor_api.parsers import (
     parse_images_batch,
     is_supported_image,
 )
+from workout_ingestor_api.services.pinterest_service import (
+    ingest_pinterest_url,
+    is_pinterest_url,
+)
+from workout_ingestor_api.api.routes import (
+    detect_multi_workout_plan,
+    split_multi_workout_plan,
+)
 
 # Mapper API URL for exercise matching
 MAPPER_API_URL = os.getenv("MAPPER_API_URL", "http://localhost:8001")
@@ -701,6 +709,7 @@ class BulkImportService:
         Batch process URLs with concurrency limit.
 
         Uses optimized batch fetching from URL parser.
+        Pinterest URLs are fully ingested to extract workout data.
 
         Returns:
             Tuple of (detected_items, success_count, error_count)
@@ -709,61 +718,160 @@ class BulkImportService:
         success_count = 0
         error_count = 0
 
-        # Fetch metadata for all URLs in batch (with concurrency limit)
-        metadata_list = await fetch_url_metadata_batch(urls, max_concurrent)
+        # Separate Pinterest URLs from other URLs
+        pinterest_urls = [(idx, url) for idx, url in enumerate(urls) if is_pinterest_url(url)]
+        other_urls = [(idx, url) for idx, url in enumerate(urls) if not is_pinterest_url(url)]
 
-        for idx, metadata in enumerate(metadata_list):
+        # Process Pinterest URLs with full ingestion
+        for idx, url in pinterest_urls:
             item_id = str(uuid.uuid4())
+            try:
+                logger.info(f"Ingesting Pinterest URL: {url}")
+                result = await ingest_pinterest_url(url, limit=20)  # Support multi-workout pins
 
-            if metadata.error:
+                if not result.success or not result.workouts:
+                    detected_items.append({
+                        "id": item_id,
+                        "source_index": idx,
+                        "source_type": "urls",
+                        "source_ref": url,
+                        "raw_data": {"url": url, "platform": "pinterest"},
+                        "parsed_title": "Pinterest Workout",
+                        "parsed_exercise_count": 0,
+                        "parsed_block_count": 0,
+                        "confidence": 30,
+                        "errors": result.errors or ["Failed to extract workout from Pinterest"],
+                    })
+                    error_count += 1
+                    continue
+
+                # Process each workout, checking for multi-workout plans
+                all_workouts_to_add = []
+                for workout in result.workouts:
+                    # Check if this workout contains multiple separate workouts (e.g., weekly plan with Mon-Fri blocks)
+                    multi_workout_info = detect_multi_workout_plan(workout)
+
+                    if multi_workout_info["is_multi_workout_plan"]:
+                        # Split into individual workouts (e.g., Monday, Tuesday, etc.)
+                        base_title = workout.get("title", "Pinterest Workout")
+                        individual_workouts = split_multi_workout_plan(workout, base_title, url)
+                        logger.info(
+                            f"Pinterest: Split multi-workout plan into {len(individual_workouts)} workouts "
+                            f"({multi_workout_info['split_reason']})"
+                        )
+                        all_workouts_to_add.extend(individual_workouts)
+                    else:
+                        all_workouts_to_add.append(workout)
+
+                # Create detected items for each individual workout
+                for workout_idx, workout in enumerate(all_workouts_to_add):
+                    workout_item_id = str(uuid.uuid4()) if workout_idx > 0 else item_id
+                    title = workout.get("title", f"Pinterest Workout {workout_idx + 1}")
+
+                    # Count exercises in blocks
+                    exercise_count = 0
+                    block_count = len(workout.get("blocks", []))
+                    for block in workout.get("blocks", []):
+                        exercise_count += len(block.get("exercises", []))
+
+                    detected_items.append({
+                        "id": workout_item_id,
+                        "source_index": idx,
+                        "source_type": "urls",
+                        "source_ref": url,
+                        "raw_data": {
+                            "url": url,
+                            "platform": "pinterest",
+                            "workout_index": workout_idx,
+                            "total_workouts": len(all_workouts_to_add),
+                        },
+                        "parsed_title": title,
+                        "parsed_exercise_count": exercise_count,
+                        "parsed_block_count": block_count,
+                        "parsed_workout": workout,  # Include full workout structure!
+                        "confidence": 85,
+                        "platform": "pinterest",
+                    })
+                    logger.info(f"Detected Pinterest workout '{title}' with {exercise_count} exercises")
+
+                success_count += 1
+
+            except Exception as e:
+                logger.exception(f"Error ingesting Pinterest URL {url}: {e}")
                 detected_items.append({
                     "id": item_id,
                     "source_index": idx,
                     "source_type": "urls",
-                    "source_ref": metadata.url,
-                    "raw_data": {
-                        "url": metadata.url,
-                        "platform": metadata.platform,
-                        "video_id": metadata.video_id,
-                    },
-                    "parsed_title": f"{metadata.platform.title()} Video",
+                    "source_ref": url,
+                    "raw_data": {"url": url, "platform": "pinterest"},
+                    "parsed_title": "Pinterest Workout",
                     "parsed_exercise_count": 0,
                     "parsed_block_count": 0,
-                    "confidence": 30,
-                    "errors": [metadata.error],
+                    "confidence": 0,
+                    "errors": [str(e)],
                 })
                 error_count += 1
-            else:
-                # Build title
-                title = metadata.title
-                if not title:
-                    title = f"{metadata.platform.title()} Video"
-                    if metadata.video_id:
-                        title += f" ({metadata.video_id[:8]}...)"
 
-                detected_items.append({
-                    "id": item_id,
-                    "source_index": idx,
-                    "source_type": "urls",
-                    "source_ref": metadata.url,
-                    "raw_data": {
-                        "url": metadata.url,
-                        "platform": metadata.platform,
-                        "video_id": metadata.video_id,
-                        "title": metadata.title,
-                        "author": metadata.author,
+        # Fetch metadata for other URLs in batch (non-Pinterest)
+        if other_urls:
+            other_url_list = [url for _, url in other_urls]
+            metadata_list = await fetch_url_metadata_batch(other_url_list, max_concurrent)
+
+            for (idx, _), metadata in zip(other_urls, metadata_list):
+                item_id = str(uuid.uuid4())
+
+                if metadata.error:
+                    detected_items.append({
+                        "id": item_id,
+                        "source_index": idx,
+                        "source_type": "urls",
+                        "source_ref": metadata.url,
+                        "raw_data": {
+                            "url": metadata.url,
+                            "platform": metadata.platform,
+                            "video_id": metadata.video_id,
+                        },
+                        "parsed_title": f"{metadata.platform.title()} Video",
+                        "parsed_exercise_count": 0,
+                        "parsed_block_count": 0,
+                        "confidence": 30,
+                        "errors": [metadata.error],
+                    })
+                    error_count += 1
+                else:
+                    # Build title
+                    title = metadata.title
+                    if not title:
+                        title = f"{metadata.platform.title()} Video"
+                        if metadata.video_id:
+                            title += f" ({metadata.video_id[:8]}...)"
+
+                    detected_items.append({
+                        "id": item_id,
+                        "source_index": idx,
+                        "source_type": "urls",
+                        "source_ref": metadata.url,
+                        "raw_data": {
+                            "url": metadata.url,
+                            "platform": metadata.platform,
+                            "video_id": metadata.video_id,
+                            "title": metadata.title,
+                            "author": metadata.author,
+                            "thumbnail_url": metadata.thumbnail_url,
+                            "duration_seconds": metadata.duration_seconds,
+                        },
+                        "parsed_title": title,
+                        "parsed_exercise_count": 0,
+                        "parsed_block_count": 0,
+                        "confidence": 70,
                         "thumbnail_url": metadata.thumbnail_url,
-                        "duration_seconds": metadata.duration_seconds,
-                    },
-                    "parsed_title": title,
-                    "parsed_exercise_count": 0,
-                    "parsed_block_count": 0,
-                    "confidence": 70,
-                    "thumbnail_url": metadata.thumbnail_url,
-                    "author": metadata.author,
-                    "platform": metadata.platform,
-                })
-                success_count += 1
+                        "author": metadata.author,
+                        "platform": metadata.platform,
+                    })
+                    success_count += 1
+
+        # Sort by source_index to maintain original order
+        detected_items.sort(key=lambda x: x["source_index"])
 
         return detected_items, success_count, error_count
 

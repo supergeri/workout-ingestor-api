@@ -5,6 +5,7 @@ Parses URLs from video platforms:
 - YouTube (youtube.com, youtu.be)
 - Instagram (instagram.com/p/, /reel/, /tv/)
 - TikTok (tiktok.com, vm.tiktok.com)
+- Pinterest (pinterest.com/pin/, pin.it/)
 
 Fetches metadata and routes to workout-ingestor-api for full processing.
 """
@@ -73,6 +74,19 @@ class URLParser:
         re.compile(r'vm\.tiktok\.com/([A-Za-z0-9_-]+)'),
     ]
 
+    # Pinterest patterns
+    PINTEREST_PATTERNS = [
+        re.compile(r'pinterest\.com/pin/(\d+)'),
+        re.compile(r'pinterest\.[a-z]+/pin/(\d+)'),  # Regional domains like pinterest.co.uk
+        re.compile(r'pin\.it/([A-Za-z0-9]+)'),  # Short URLs
+    ]
+
+    # Pinterest board patterns (for bulk import)
+    PINTEREST_BOARD_PATTERNS = [
+        re.compile(r'pinterest\.com/([^/]+)/([^/]+)/?$'),  # pinterest.com/username/boardname
+        re.compile(r'pinterest\.[a-z]+/([^/]+)/([^/]+)/?$'),  # Regional domains
+    ]
+
     @classmethod
     def identify_platform(cls, url: str) -> Tuple[str, Optional[str]]:
         """
@@ -101,6 +115,19 @@ class URLParser:
             if match:
                 return ('tiktok', match.group(1))
 
+        # Check Pinterest pin URLs
+        for pattern in cls.PINTEREST_PATTERNS:
+            match = pattern.search(url)
+            if match:
+                return ('pinterest', match.group(1))
+
+        # Check Pinterest board URLs
+        for pattern in cls.PINTEREST_BOARD_PATTERNS:
+            match = pattern.search(url)
+            if match:
+                # For boards, return username/boardname as the ID
+                return ('pinterest_board', f"{match.group(1)}/{match.group(2)}")
+
         # Also check by domain for shortened URLs
         parsed = urlparse(url)
         hostname = (parsed.hostname or '').lower()
@@ -111,6 +138,8 @@ class URLParser:
             return ('instagram', None)
         if 'tiktok' in hostname:
             return ('tiktok', None)
+        if 'pinterest' in hostname or hostname == 'pin.it':
+            return ('pinterest', None)
 
         return ('unknown', None)
 
@@ -118,7 +147,7 @@ class URLParser:
     def is_valid_url(cls, url: str) -> bool:
         """Check if URL is from a supported platform"""
         platform, _ = cls.identify_platform(url)
-        return platform != 'unknown'
+        return platform not in ('unknown',)
 
     @classmethod
     async def fetch_metadata(cls, url: str) -> URLMetadata:
@@ -133,7 +162,7 @@ class URLParser:
             return URLMetadata(
                 url=url,
                 platform='unknown',
-                error="URL not from a supported platform (YouTube, Instagram, TikTok)"
+                error="URL not from a supported platform (YouTube, Instagram, TikTok, Pinterest)"
             )
 
         try:
@@ -143,6 +172,8 @@ class URLParser:
                 return await cls._fetch_instagram_metadata(url, video_id)
             elif platform == 'tiktok':
                 return await cls._fetch_tiktok_metadata(url, video_id)
+            elif platform in ('pinterest', 'pinterest_board'):
+                return await cls._fetch_pinterest_metadata(url, video_id, is_board=(platform == 'pinterest_board'))
         except Exception as e:
             logger.exception(f"Error fetching metadata for {url}: {e}")
             return URLMetadata(
@@ -242,6 +273,48 @@ class URLParser:
                 )
 
     @classmethod
+    async def _fetch_pinterest_metadata(
+        cls,
+        url: str,
+        pin_id: Optional[str],
+        is_board: bool = False
+    ) -> URLMetadata:
+        """
+        Fetch Pinterest pin or board metadata.
+
+        Pinterest doesn't have a public oEmbed API, so we return basic info
+        and let the full ingestion handle detailed extraction.
+        """
+        platform = 'pinterest_board' if is_board else 'pinterest'
+
+        if is_board:
+            # For boards, the pin_id is actually "username/boardname"
+            board_path = pin_id or ""
+            parts = board_path.split("/")
+            if len(parts) >= 2:
+                title = f"Pinterest Board: {parts[1].replace('-', ' ').title()}"
+                author = parts[0]
+            else:
+                title = "Pinterest Board"
+                author = None
+
+            return URLMetadata(
+                url=url,
+                platform=platform,
+                video_id=pin_id,
+                title=title,
+                author=author,
+            )
+        else:
+            # Single pin - return basic info
+            return URLMetadata(
+                url=url,
+                platform=platform,
+                video_id=pin_id,
+                title=f"Pinterest Pin {pin_id}" if pin_id else "Pinterest Pin",
+            )
+
+    @classmethod
     async def fetch_metadata_batch(
         cls,
         urls: List[str],
@@ -295,6 +368,11 @@ class URLParser:
                 elif platform == 'instagram':
                     response = await client.post(
                         f"{INGESTOR_API_URL}/ingest/instagram_test",
+                        json={"url": url}
+                    )
+                elif platform in ('pinterest', 'pinterest_board'):
+                    response = await client.post(
+                        f"{INGESTOR_API_URL}/ingest/pinterest",
                         json={"url": url}
                     )
                 else:

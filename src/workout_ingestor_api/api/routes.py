@@ -1,5 +1,6 @@
 """API routes for workout ingestion."""
 
+import logging
 import os
 import shutil
 import subprocess
@@ -9,6 +10,8 @@ from datetime import datetime
 from typing import Optional, Dict, List
 
 import re
+
+logger = logging.getLogger(__name__)
 import requests
 from urllib.parse import urlparse, parse_qs
 
@@ -36,6 +39,10 @@ from workout_ingestor_api.services.instagram_service import (
 from workout_ingestor_api.services.tiktok_service import (
     TikTokService,
     TikTokServiceError,
+)
+from workout_ingestor_api.services.pinterest_service import (
+    PinterestService,
+    PinterestServiceError,
 )
 from workout_ingestor_api.services.vision_service import VisionService
 from workout_ingestor_api.services.llm_service import LLMService
@@ -97,6 +104,11 @@ class TikTokIngestRequest(BaseModel):
     vision_provider: str = "openai"
     vision_model: Optional[str] = "gpt-4o-mini"
     mode: str = "auto"  # "auto" | "hybrid" | "audio_only" | "vision_only"
+
+
+class PinterestIngestRequest(BaseModel):
+    url: str
+    vision_model: str = "gpt-4o-mini"  # Vision model for OCR + extraction
 
 
 class NotWorkoutFeedback(BaseModel):
@@ -522,6 +534,10 @@ async def ingest_image_vision(
                 if not ex.get("type"):
                     ex["type"] = "strength"
 
+        # Ensure title is not None (Vision API may return null)
+        if not workout_dict.get("title"):
+            workout_dict["title"] = "Untitled Workout"
+
         workout = Workout(**workout_dict)
         workout = workout.convert_to_new_structure()
         workout.source = f"image:{file.filename}"
@@ -544,6 +560,7 @@ async def ingest_image_vision(
     except HTTPException:
         raise
     except Exception as exc:
+        logger.exception(f"Vision model extraction failed for {file.filename}: {exc}")
         raise HTTPException(
             status_code=500,
             detail=f"Vision model extraction failed: {str(exc)}",
@@ -1059,12 +1076,12 @@ async def ingest_tiktok(payload: TikTokIngestRequest):
 async def get_tiktok_metadata(url: str):
     """
     Get metadata for a TikTok video without full ingestion.
-    
+
     Useful for previewing video info before ingesting.
-    
+
     Args:
         url: TikTok video URL
-        
+
     Returns:
         Video metadata (title, author, thumbnail, etc.)
     """
@@ -1073,11 +1090,302 @@ async def get_tiktok_metadata(url: str):
             status_code=400,
             detail="Invalid TikTok URL"
         )
-    
+
     try:
         metadata = TikTokService.extract_metadata(url)
         return JSONResponse(metadata.to_dict())
     except TikTokServiceError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Multi-workout plan detection and splitting
+# ---------------------------------------------------------------------------
+
+# Patterns that indicate a block is a separate workout day
+DAY_OF_WEEK_PATTERN = re.compile(
+    r'^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$',
+    re.IGNORECASE
+)
+DAY_NUMBER_PATTERN = re.compile(
+    r'^day\s*\d+$',
+    re.IGNORECASE
+)
+WEEK_DAY_PATTERN = re.compile(
+    r'^week\s*\d+.*day\s*\d+$',
+    re.IGNORECASE
+)
+
+
+def detect_multi_workout_plan(workout_dict: dict) -> dict:
+    """
+    Detect if a workout contains multiple separate workouts (e.g., a weekly plan).
+
+    Returns:
+        dict with:
+        - is_multi_workout_plan: bool
+        - workout_count: int (number of separate workouts detected)
+        - split_reason: str (why it was detected as multi-workout)
+        - block_labels: list of detected day/workout labels
+    """
+    blocks = workout_dict.get("blocks", [])
+
+    if len(blocks) <= 1:
+        return {
+            "is_multi_workout_plan": False,
+            "workout_count": 1,
+            "split_reason": None,
+            "block_labels": [],
+        }
+
+    day_labels = []
+    for block in blocks:
+        label = block.get("label", "").strip()
+        if DAY_OF_WEEK_PATTERN.match(label):
+            day_labels.append(("day_of_week", label))
+        elif DAY_NUMBER_PATTERN.match(label):
+            day_labels.append(("day_number", label))
+        elif WEEK_DAY_PATTERN.match(label):
+            day_labels.append(("week_day", label))
+
+    # If most blocks have day-like labels, it's a multi-workout plan
+    if len(day_labels) >= len(blocks) * 0.7:  # 70% threshold
+        pattern_type = day_labels[0][0] if day_labels else "unknown"
+        return {
+            "is_multi_workout_plan": True,
+            "workout_count": len(day_labels),
+            "split_reason": f"Detected {pattern_type} pattern in block labels",
+            "block_labels": [label for _, label in day_labels],
+        }
+
+    return {
+        "is_multi_workout_plan": False,
+        "workout_count": 1,
+        "split_reason": None,
+        "block_labels": [],
+    }
+
+
+def split_multi_workout_plan(workout_dict: dict, base_title: str, source_url: str) -> list:
+    """
+    Split a multi-workout plan into individual workouts.
+
+    Each block becomes its own workout with the block label as part of the title.
+
+    Returns:
+        list of individual workout dicts
+    """
+    blocks = workout_dict.get("blocks", [])
+    provenance = workout_dict.get("_provenance", {})
+
+    individual_workouts = []
+    for i, block in enumerate(blocks):
+        block_label = block.get("label", f"Day {i + 1}")
+
+        # Create a new workout from this single block
+        # Change the block label to "Workout" since it's now standalone
+        new_block = block.copy()
+        new_block["label"] = "Workout"
+
+        individual_workout = {
+            "title": f"{base_title} - {block_label}",
+            "source": source_url,
+            "blocks": [new_block],
+            "_provenance": {
+                **provenance,
+                "original_title": base_title,
+                "split_from_multi_workout": True,
+                "original_block_label": block_label,
+                "workout_index": i + 1,
+                "total_workouts": len(blocks),
+            }
+        }
+        individual_workouts.append(individual_workout)
+
+    return individual_workouts
+
+
+# ---------------------------------------------------------------------------
+# Pinterest ingest with Vision AI for workout infographics
+# ---------------------------------------------------------------------------
+
+
+@router.post("/ingest/pinterest")
+async def ingest_pinterest(payload: PinterestIngestRequest):
+    """
+    Ingest workout from Pinterest pin or board URL.
+
+    Supports:
+    - Single pin URLs: pinterest.com/pin/xxxxx, pin.it/xxxxx
+    - Board URLs: pinterest.com/username/boardname (processes up to 20 pins)
+
+    Uses Vision AI (GPT-4o-mini by default) to extract workout data
+    from fitness infographic images.
+
+    Args:
+        payload.url: Pinterest pin or board URL
+        payload.vision_model: Vision model to use (default: gpt-4o-mini)
+
+    Returns:
+        Extracted workout(s) with provenance metadata
+    """
+    url = payload.url
+    vision_model = payload.vision_model
+
+    service = PinterestService()
+
+    try:
+        # Determine if this is a board or single pin
+        if service.is_board_url(url):
+            result = await service.ingest_board(url, limit=20, vision_model=vision_model)
+        else:
+            result = await service.ingest_pin(url, vision_model=vision_model)
+
+        if not result.success:
+            error_msg = result.errors[0] if result.errors else "Failed to ingest Pinterest content"
+            raise HTTPException(
+                status_code=400,
+                detail=error_msg
+            )
+
+        # Build response with all workouts
+        workouts = []
+        for workout_data in result.workouts:
+            try:
+                # Get metadata from workout data
+                pin_id = workout_data.get("pin_id", "")
+                source_url = workout_data.get("source_url", url)
+                confidence = workout_data.get("confidence", 0)
+                metadata = workout_data.get("metadata", {})
+
+                # Create Workout object with only valid fields
+                workout = Workout(
+                    title=workout_data.get("title", "Pinterest Workout"),
+                    source=source_url,
+                    blocks=workout_data.get("blocks", []),
+                )
+                workout_dict = workout.convert_to_new_structure().model_dump()
+                workout_dict["_provenance"] = {
+                    "mode": "pinterest_vision",
+                    "pin_id": pin_id,
+                    "pin_url": source_url,
+                    "title": workout_data.get("title"),
+                    "description": metadata.get("pin_description"),
+                    "vision_model": vision_model,
+                    "confidence": confidence,
+                    "extraction_method": metadata.get("extraction_method"),
+                    "is_carousel": metadata.get("is_carousel", False),
+                    "carousel_index": metadata.get("carousel_index"),
+                    "carousel_total": metadata.get("carousel_total"),
+                }
+                workouts.append(workout_dict)
+            except Exception as e:
+                logger.warning(f"Failed to process workout: {e}", exc_info=True)
+                logger.debug(f"Workout data that failed: {workout_data}")
+                continue
+
+        if len(workouts) == 1:
+            workout = workouts[0]
+            # Check if this single workout contains multiple separate workouts (e.g., weekly plan)
+            multi_workout_info = detect_multi_workout_plan(workout)
+
+            if multi_workout_info["is_multi_workout_plan"]:
+                # Split into individual workouts
+                base_title = workout.get("title", "Pinterest Workout")
+                individual_workouts = split_multi_workout_plan(workout, base_title, url)
+
+                logger.info(
+                    f"Pinterest: Detected multi-workout plan with {len(individual_workouts)} workouts "
+                    f"({multi_workout_info['split_reason']})"
+                )
+
+                return JSONResponse({
+                    "workouts": individual_workouts,
+                    "total": len(individual_workouts),
+                    "source_url": url,
+                    "_provenance": {
+                        "mode": "pinterest_multi_workout",
+                        "pin_id": workout.get("_provenance", {}).get("pin_id"),
+                        "original_title": base_title,
+                        "split_reason": multi_workout_info["split_reason"],
+                        "workout_labels": multi_workout_info["block_labels"],
+                    }
+                })
+            else:
+                # Single workout from single pin - return directly
+                return JSONResponse(workout)
+        elif len(workouts) > 1:
+            # Board - return array of workouts
+            return JSONResponse({
+                "workouts": workouts,
+                "total": len(workouts),
+                "source_url": url,
+                "_provenance": {
+                    "mode": "pinterest_board",
+                    "pins_processed": result.pins_processed,
+                    "pins_with_workouts": len(workouts),
+                }
+            })
+        else:
+            # No workouts found
+            raise HTTPException(
+                status_code=422,
+                detail="No workout content could be extracted from the Pinterest image(s)"
+            )
+
+    except PinterestServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Pinterest ingestion failed: {str(e)}"
+        )
+
+
+@router.get("/pinterest/metadata")
+async def get_pinterest_metadata(url: str):
+    """
+    Get metadata for a Pinterest pin without full workout extraction.
+
+    Useful for previewing pin info before ingesting.
+
+    Args:
+        url: Pinterest pin URL
+
+    Returns:
+        Pin metadata (title, description, image_url, etc.)
+    """
+    service = PinterestService()
+
+    try:
+        # Resolve short URL if needed
+        resolved_url = await service._resolve_short_url(url)
+
+        # Get pin metadata (returns PinterestPin dataclass)
+        pin = await service._get_pin_metadata(resolved_url)
+
+        if not pin:
+            raise HTTPException(
+                status_code=404,
+                detail="Could not fetch Pinterest pin metadata"
+            )
+
+        return JSONResponse({
+            "url": url,
+            "resolved_url": resolved_url,
+            "pin_id": pin.pin_id,
+            "title": pin.title,
+            "description": pin.description,
+            "image_url": pin.image_url,
+        })
+
+    except PinterestServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
