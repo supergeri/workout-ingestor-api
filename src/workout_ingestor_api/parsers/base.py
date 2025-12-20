@@ -34,6 +34,28 @@ class BaseParser(ABC):
     DAY_PATTERN = re.compile(r'day\s*(\d+)', re.IGNORECASE)  # "Day 1", "day 2"
     WEEK_PATTERN = re.compile(r'week\s*(\d+)', re.IGNORECASE)  # "Week 1", "week 2"
 
+    # Ambiguous value patterns (AMA-108)
+    BODYWEIGHT_PATTERN = re.compile(
+        r'^(BW|bodyweight|body\s*weight)(\s*[+\-]\s*(\d+(?:\.\d+)?)\s*(kg|lbs?)?)?$',
+        re.IGNORECASE
+    )  # "BW", "BW+25", "bodyweight", "BW-10kg"
+    AMRAP_PATTERN = re.compile(
+        r'^(AMRAP|as\s*many\s*as\s*possible)$',
+        re.IGNORECASE
+    )  # "AMRAP", "As Many As Possible"
+    MAX_PATTERN = re.compile(
+        r'^(max|1rm|1\s*rep\s*max|pr|personal\s*record)$',
+        re.IGNORECASE
+    )  # "Max", "1RM", "PR"
+    FAILURE_PATTERN = re.compile(
+        r'^(failure|to\s*failure|f|fail)$',
+        re.IGNORECASE
+    )  # "Failure", "To Failure", "F"
+    DROPSET_PATTERN = re.compile(
+        r'^(drop\s*set|DS|(\d+)\s*[>→]\s*(\d+)(\s*[>→]\s*(\d+))?)$',
+        re.IGNORECASE
+    )  # "Drop set", "DS", "100>80>60"
+
     def __init__(self):
         self.errors: List[str] = []
         self.warnings: List[str] = []
@@ -162,6 +184,22 @@ class BaseParser(ABC):
         if self.DURATION_PATTERN.match(reps_str):
             flags.append(ExerciseFlag.DURATION)
 
+        # Check for AMRAP (AMA-108)
+        if self.AMRAP_PATTERN.match(reps_str):
+            flags.append(ExerciseFlag.AMRAP)
+
+        # Check for max/1RM (AMA-108)
+        if self.MAX_PATTERN.match(reps_str):
+            flags.append(ExerciseFlag.MAX)
+
+        # Check for failure (AMA-108)
+        if self.FAILURE_PATTERN.match(reps_str):
+            flags.append(ExerciseFlag.FAILURE)
+
+        # Check for drop set notation (AMA-108)
+        if self.DROPSET_PATTERN.match(reps_str):
+            flags.append(ExerciseFlag.DROPSET)
+
         return reps_str, flags
 
     def parse_weight(self, weight_str: str) -> Tuple[Optional[str], Optional[str], List[ExerciseFlag]]:
@@ -176,6 +214,17 @@ class BaseParser(ABC):
 
         weight_str = str(weight_str).strip()
         flags = []
+
+        # Check for bodyweight notation (AMA-108)
+        bw_match = self.BODYWEIGHT_PATTERN.match(weight_str)
+        if bw_match:
+            flags.append(ExerciseFlag.BODYWEIGHT)
+            # Extract additional weight if present (e.g., "BW+25")
+            additional = bw_match.group(3)
+            unit = bw_match.group(4)
+            if additional:
+                return weight_str, unit.lower() if unit else None, flags
+            return "BW", None, flags
 
         # Check for percentage
         pct_match = self.PERCENTAGE_PATTERN.match(weight_str)

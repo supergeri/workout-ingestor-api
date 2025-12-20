@@ -16,6 +16,11 @@ class ExerciseFlag(str, Enum):
     DURATION = "duration"     # Duration-based like "60s", "30s"
     PERCENTAGE = "percentage" # Percentage weights like "70%", "@RPE8"
     WARMUP = "warmup"        # Warmup sets
+    BODYWEIGHT = "bodyweight" # Bodyweight exercises (BW, BW+25)
+    AMRAP = "amrap"          # As Many Reps As Possible
+    MAX = "max"              # Max effort/1RM attempt
+    FAILURE = "failure"      # To failure
+    DROPSET = "dropset"      # Drop set notation
 
 
 class ParsedExercise(BaseModel):
@@ -103,6 +108,12 @@ class ParseResult(BaseModel):
     # Detection quality
     confidence: float = Field(default=0, ge=0, le=100)
     detected_format: Optional[str] = None  # 'strong_app', 'hevy', 'excel_multi_sheet', etc.
+
+    # LLM fallback flag
+    needs_llm_review: bool = Field(
+        default=False,
+        description="True if confidence is below threshold and LLM review is recommended"
+    )
 
     # For multi-sheet Excel files
     sheet_names: List[str] = Field(default_factory=list)

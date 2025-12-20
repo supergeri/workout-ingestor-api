@@ -10,10 +10,16 @@ Handles the 5-step bulk import workflow:
 """
 
 import base64
-from typing import Optional
+import os
+from typing import Optional, List
 
+import httpx
 from fastapi import APIRouter, UploadFile, File as FastAPIFile, Form, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+# Mapper API URL for exercise search
+MAPPER_API_URL = os.getenv("MAPPER_API_URL", "http://localhost:8001")
 
 from workout_ingestor_api.services.bulk_import import (
     BulkImportService,
@@ -309,3 +315,70 @@ async def bulk_import_cancel(
         "success": success,
         "message": "Import cancelled" if success else "Failed to cancel import",
     }
+
+
+# ============================================================================
+# Exercise Search
+# ============================================================================
+
+class ExerciseSearchResult(BaseModel):
+    """Single exercise search result"""
+    name: str
+    score: float  # 0-100 confidence score
+
+
+class ExerciseSearchResponse(BaseModel):
+    """Response from exercise search"""
+    query: str
+    results: List[ExerciseSearchResult]
+    total: int
+
+
+@router.get("/exercises/search", response_model=ExerciseSearchResponse)
+async def search_exercises(
+    query: str = Query(..., min_length=1, description="Search query for exercise name"),
+    limit: int = Query(default=10, ge=1, le=50, description="Max number of results"),
+):
+    """
+    Search the Garmin exercise database.
+
+    Returns matching exercises with confidence scores.
+    Used for manual exercise matching in the bulk import workflow.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{MAPPER_API_URL}/exercise/similar/{query}",
+                params={"limit": limit}
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                similar = data.get("similar", [])
+
+                results = []
+                for item in similar:
+                    name = item.get("name") or item.get("garmin_name")
+                    score = item.get("score", 0)
+                    # Convert score to 0-100 if it's 0-1
+                    if score <= 1:
+                        score = score * 100
+                    if name:
+                        results.append(ExerciseSearchResult(name=name, score=round(score, 1)))
+
+                return ExerciseSearchResponse(
+                    query=query,
+                    results=results,
+                    total=len(results),
+                )
+
+    except Exception as e:
+        # Log error but return empty results
+        import logging
+        logging.getLogger(__name__).warning(f"Exercise search failed: {e}")
+
+    return ExerciseSearchResponse(
+        query=query,
+        results=[],
+        total=0,
+    )

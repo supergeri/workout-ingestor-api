@@ -44,37 +44,71 @@ MAPPER_API_URL = os.getenv("MAPPER_API_URL", "http://localhost:8001")
 logger = logging.getLogger(__name__)
 
 
-async def find_garmin_exercise(exercise_name: str) -> Optional[Dict[str, Any]]:
-    """Call mapper-api to find matching Garmin exercise."""
+async def find_garmin_exercise_async(
+    exercise_name: str,
+    threshold: int = 80
+) -> tuple[Optional[str], float]:
+    """
+    Call mapper-api to find matching Garmin exercise.
+
+    Returns:
+        Tuple of (garmin_name, confidence) where confidence is 0-1.
+        Returns (None, 0.0) if no match found.
+    """
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
-                f"{MAPPER_API_URL}/exercise/similar/{exercise_name}"
+                f"{MAPPER_API_URL}/exercise/similar/{exercise_name}",
+                params={"limit": 5}
             )
             if response.status_code == 200:
                 data = response.json()
-                if data.get("matches"):
-                    best_match = data["matches"][0]
-                    return {
-                        "name": best_match.get("name"),
-                        "confidence": best_match.get("score", 0),
-                    }
+                similar = data.get("similar", [])
+                if similar:
+                    # similar is list of {name, score} dicts
+                    best_match = similar[0]
+                    name = best_match.get("name") or best_match.get("garmin_name")
+                    score = best_match.get("score", 0)
+                    # Convert score to 0-1 if it's 0-100
+                    confidence = score / 100 if score > 1 else score
+
+                    # Apply threshold (threshold is 0-100, confidence is 0-1)
+                    if confidence * 100 >= threshold:
+                        return name, confidence
     except Exception as e:
         logger.warning(f"Failed to call mapper-api for exercise match: {e}")
-    return None
+    return None, 0.0
 
 
-async def get_garmin_suggestions(exercise_name: str, limit: int = 5) -> List[Dict[str, Any]]:
-    """Call mapper-api to get exercise suggestions."""
+async def get_garmin_suggestions_async(
+    exercise_name: str,
+    limit: int = 5,
+    score_cutoff: float = 0.3
+) -> List[tuple[str, float]]:
+    """
+    Call mapper-api to get exercise suggestions.
+
+    Returns:
+        List of (garmin_name, confidence) tuples sorted by confidence desc.
+    """
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{MAPPER_API_URL}/exercise/suggest",
-                json={"query": exercise_name, "limit": limit}
+            response = await client.get(
+                f"{MAPPER_API_URL}/exercise/similar/{exercise_name}",
+                params={"limit": limit}
             )
             if response.status_code == 200:
                 data = response.json()
-                return data.get("suggestions", [])
+                similar = data.get("similar", [])
+                results = []
+                for item in similar:
+                    name = item.get("name") or item.get("garmin_name")
+                    score = item.get("score", 0)
+                    # Convert score to 0-1 if it's 0-100
+                    confidence = score / 100 if score > 1 else score
+                    if name and confidence >= score_cutoff:
+                        results.append((name, confidence))
+                return results
     except Exception as e:
         logger.warning(f"Failed to call mapper-api for suggestions: {e}")
     return []
@@ -307,6 +341,10 @@ class BulkImportService:
     - Import execution with progress tracking
     """
 
+    # In-memory storage for when Supabase is not available
+    _jobs_cache: Dict[str, Dict[str, Any]] = {}
+    _items_cache: Dict[str, List[Dict[str, Any]]] = {}  # job_id -> items
+
     def __init__(self):
         self.supabase = self._get_supabase_client()
 
@@ -347,18 +385,27 @@ class BulkImportService:
     ) -> str:
         """Create a new bulk import job"""
         job_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
 
+        # Always store in cache first
+        job_data = {
+            "id": job_id,
+            "profile_id": profile_id,
+            "input_type": input_type,
+            "status": "pending",
+            "total_items": total_items,
+            "processed_items": 0,
+            "results": [],
+            "created_at": now,
+            "updated_at": now,
+        }
+        BulkImportService._jobs_cache[job_id] = job_data
+        logger.info(f"Created job {job_id} in cache")
+
+        # Also try to store in Supabase
         if self.supabase:
             try:
-                self.supabase.table("bulk_import_jobs").insert({
-                    "id": job_id,
-                    "profile_id": profile_id,
-                    "input_type": input_type,
-                    "status": "pending",
-                    "total_items": total_items,
-                    "processed_items": 0,
-                    "results": [],
-                }).execute()
+                self.supabase.table("bulk_import_jobs").insert(job_data).execute()
             except Exception as e:
                 logger.error(f"Failed to create job in database: {e}")
 
@@ -372,28 +419,32 @@ class BulkImportService:
         **kwargs
     ) -> bool:
         """Update job status and optional fields"""
-        if not self.supabase:
-            return False
+        now = datetime.now(timezone.utc).isoformat()
+        update_data = {
+            "status": status,
+            "updated_at": now,
+        }
+        update_data.update(kwargs)
 
-        try:
-            update_data = {
-                "status": status,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            update_data.update(kwargs)
+        if status in ("complete", "failed", "cancelled"):
+            update_data["completed_at"] = now
 
-            if status in ("complete", "failed", "cancelled"):
-                update_data["completed_at"] = datetime.now(timezone.utc).isoformat()
+        # Always update cache first
+        if job_id in BulkImportService._jobs_cache:
+            BulkImportService._jobs_cache[job_id].update(update_data)
+            logger.info(f"Updated job {job_id} status to {status} in cache")
 
-            self.supabase.table("bulk_import_jobs").update(update_data)\
-                .eq("id", job_id)\
-                .eq("profile_id", profile_id)\
-                .execute()
+        # Also try to update in Supabase
+        if self.supabase:
+            try:
+                self.supabase.table("bulk_import_jobs").update(update_data)\
+                    .eq("id", job_id)\
+                    .eq("profile_id", profile_id)\
+                    .execute()
+            except Exception as e:
+                logger.error(f"Failed to update job status in database: {e}")
 
-            return True
-        except Exception as e:
-            logger.error(f"Failed to update job status: {e}")
-            return False
+        return True
 
     def _update_job_progress(
         self,
@@ -403,38 +454,51 @@ class BulkImportService:
         current_item: Optional[str] = None
     ) -> bool:
         """Update job progress"""
-        if not self.supabase:
-            return False
+        now = datetime.now(timezone.utc).isoformat()
+        update_data = {
+            "processed_items": processed_items,
+            "current_item": current_item,
+            "updated_at": now,
+        }
 
-        try:
-            self.supabase.table("bulk_import_jobs").update({
-                "processed_items": processed_items,
-                "current_item": current_item,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", job_id).eq("profile_id", profile_id).execute()
+        # Always update cache first
+        if job_id in BulkImportService._jobs_cache:
+            BulkImportService._jobs_cache[job_id].update(update_data)
 
-            return True
-        except Exception as e:
-            logger.error(f"Failed to update job progress: {e}")
-            return False
+        # Also try to update in Supabase
+        if self.supabase:
+            try:
+                self.supabase.table("bulk_import_jobs").update(update_data)\
+                    .eq("id", job_id).eq("profile_id", profile_id).execute()
+            except Exception as e:
+                logger.error(f"Failed to update job progress in database: {e}")
+
+        return True
 
     def _get_job(self, job_id: str, profile_id: str) -> Optional[Dict[str, Any]]:
-        """Get job by ID"""
-        if not self.supabase:
-            return None
+        """Get job by ID - checks cache first, then database"""
+        # Try Supabase first if available
+        if self.supabase:
+            try:
+                result = self.supabase.table("bulk_import_jobs")\
+                    .select("*")\
+                    .eq("id", job_id)\
+                    .eq("profile_id", profile_id)\
+                    .single()\
+                    .execute()
 
-        try:
-            result = self.supabase.table("bulk_import_jobs")\
-                .select("*")\
-                .eq("id", job_id)\
-                .eq("profile_id", profile_id)\
-                .single()\
-                .execute()
+                if result.data:
+                    return result.data
+            except Exception as e:
+                logger.warning(f"Failed to get job from database: {e}")
 
-            return result.data if result.data else None
-        except Exception as e:
-            logger.error(f"Failed to get job: {e}")
-            return None
+        # Fall back to cache
+        job = BulkImportService._jobs_cache.get(job_id)
+        if job and job.get("profile_id") == profile_id:
+            logger.info(f"Retrieved job {job_id} from cache")
+            return job
+
+        return None
 
     # ========================================================================
     # Detected Items Management
@@ -446,33 +510,42 @@ class BulkImportService:
         profile_id: str,
         items: List[Dict[str, Any]]
     ) -> bool:
-        """Store detected items in database"""
-        if not self.supabase or not items:
+        """Store detected items in database or in-memory cache"""
+        if not items:
             return False
 
-        try:
-            records = [
-                {
-                    "id": item.get("id", str(uuid.uuid4())),
-                    "job_id": job_id,
-                    "profile_id": profile_id,
-                    "source_index": item.get("source_index", idx),
-                    "source_type": item.get("source_type", "file"),
-                    "source_ref": item.get("source_ref", ""),
-                    "raw_data": item.get("raw_data", {}),
-                    "parsed_workout": item.get("parsed_workout"),
-                    "confidence": item.get("confidence", 0),
-                    "errors": item.get("errors", []),
-                    "warnings": item.get("warnings", []),
-                }
-                for idx, item in enumerate(items)
-            ]
+        # Build records
+        records = [
+            {
+                "id": item.get("id", str(uuid.uuid4())),
+                "job_id": job_id,
+                "profile_id": profile_id,
+                "source_index": item.get("source_index", idx),
+                "source_type": item.get("source_type", "file"),
+                "source_ref": item.get("source_ref", ""),
+                "raw_data": item.get("raw_data", {}),
+                "parsed_workout": item.get("parsed_workout"),
+                "confidence": item.get("confidence", 0),
+                "errors": item.get("errors", []),
+                "warnings": item.get("warnings", []),
+                "selected": True,  # Default to selected
+            }
+            for idx, item in enumerate(items)
+        ]
 
-            self.supabase.table("bulk_import_detected_items").insert(records).execute()
-            return True
-        except Exception as e:
-            logger.error(f"Failed to store detected items: {e}")
-            return False
+        # Always store in cache for fallback
+        BulkImportService._items_cache[job_id] = records
+        logger.info(f"Stored {len(records)} items in cache for job {job_id}")
+
+        # Try to store in Supabase if available
+        if self.supabase:
+            try:
+                self.supabase.table("bulk_import_detected_items").insert(records).execute()
+                return True
+            except Exception as e:
+                logger.error(f"Failed to store detected items in DB: {e}")
+
+        return True  # Return true since we stored in cache
 
     def _get_detected_items(
         self,
@@ -480,25 +553,33 @@ class BulkImportService:
         profile_id: str,
         selected_only: bool = False
     ) -> List[Dict[str, Any]]:
-        """Get detected items for a job"""
-        if not self.supabase:
-            return []
+        """Get detected items for a job from database or in-memory cache"""
+        # Try Supabase first
+        if self.supabase:
+            try:
+                query = self.supabase.table("bulk_import_detected_items")\
+                    .select("*")\
+                    .eq("job_id", job_id)\
+                    .eq("profile_id", profile_id)\
+                    .order("source_index")
 
-        try:
-            query = self.supabase.table("bulk_import_detected_items")\
-                .select("*")\
-                .eq("job_id", job_id)\
-                .eq("profile_id", profile_id)\
-                .order("source_index")
+                if selected_only:
+                    query = query.eq("selected", True)
 
-            if selected_only:
-                query = query.eq("selected", True)
+                result = query.execute()
+                if result.data:
+                    return result.data
+            except Exception as e:
+                logger.error(f"Failed to get detected items from DB: {e}")
 
-            result = query.execute()
-            return result.data if result.data else []
-        except Exception as e:
-            logger.error(f"Failed to get detected items: {e}")
-            return []
+        # Fallback to in-memory cache
+        items = BulkImportService._items_cache.get(job_id, [])
+        logger.info(f"Retrieved {len(items)} items from cache for job {job_id}")
+
+        if selected_only:
+            items = [i for i in items if i.get("selected", True)]
+
+        return items
 
     def _update_detected_item(
         self,
@@ -1163,27 +1244,46 @@ class BulkImportService:
         exercise_names = set()
         exercise_sources: Dict[str, List[str]] = {}
 
+        def add_exercise_name(name: str, item_id: str):
+            """Helper to add exercise name to tracking sets"""
+            if name:
+                exercise_names.add(name)
+                if name not in exercise_sources:
+                    exercise_sources[name] = []
+                exercise_sources[name].append(item_id)
+
         for item in detected:
             workout = item.get("parsed_workout") or {}
+            item_id = item["id"]
+
+            # Handle direct exercises on workout (from CSV parser)
+            for exercise in workout.get("exercises", []):
+                name = exercise.get("raw_name") or exercise.get("name", "")
+                add_exercise_name(name, item_id)
+
+            # Handle workouts array (from multi-workout files)
+            for sub_workout in workout.get("workouts", []):
+                for exercise in sub_workout.get("exercises", []):
+                    name = exercise.get("raw_name") or exercise.get("name", "")
+                    add_exercise_name(name, item_id)
+
+            # Handle blocks structure (from URL/image parsers)
             for block in workout.get("blocks") or []:
-                # Direct exercises
+                # Direct exercises in blocks
                 for exercise in block.get("exercises", []):
                     name = exercise.get("name", "")
-                    if name:
-                        exercise_names.add(name)
-                        if name not in exercise_sources:
-                            exercise_sources[name] = []
-                        exercise_sources[name].append(item["id"])
+                    add_exercise_name(name, item_id)
 
                 # Superset exercises
                 for superset in block.get("supersets", []):
                     for exercise in superset.get("exercises", []):
                         name = exercise.get("name", "")
-                        if name:
-                            exercise_names.add(name)
-                            if name not in exercise_sources:
-                                exercise_sources[name] = []
-                            exercise_sources[name].append(item["id"])
+                        add_exercise_name(name, item_id)
+
+        # Log what we found
+        logger.info(f"Found {len(exercise_names)} unique exercises from {len(detected)} detected items")
+        if exercise_names:
+            logger.info(f"Exercises: {list(exercise_names)[:10]}...")  # Log first 10
 
         # Match each unique exercise
         exercises = []
@@ -1204,11 +1304,11 @@ class BulkImportService:
                 ))
                 continue
 
-            # Use Garmin matcher for fuzzy matching
-            matched_name, confidence = find_garmin_exercise(name, threshold=30)
+            # Use Garmin matcher for fuzzy matching (async call to mapper-api)
+            matched_name, confidence = await find_garmin_exercise_async(name, threshold=30)
 
-            # Get suggestions for alternatives
-            suggestions_list = get_garmin_suggestions(name, limit=5, score_cutoff=0.3)
+            # Get suggestions for alternatives (async call to mapper-api)
+            suggestions_list = await get_garmin_suggestions_async(name, limit=5, score_cutoff=0.3)
             suggestions = [
                 {"name": sugg_name, "confidence": round(sugg_conf, 2)}
                 for sugg_name, sugg_conf in suggestions_list
@@ -1271,27 +1371,69 @@ class BulkImportService:
     ) -> BulkPreviewResponse:
         """Generate preview of workouts to be imported."""
         detected = self._get_detected_items(job_id, profile_id)
+        logger.info(f"Generating preview for {len(detected)} detected items")
 
         previews = []
         stats = ImportStats()
+        total_exercises = 0
 
         for item in detected:
-            is_selected = item["id"] in selected_ids
+            # If no selected_ids provided, select all by default
+            is_selected = len(selected_ids) == 0 or item["id"] in selected_ids
+
+            workout_data = item.get("parsed_workout") or {}
+
+            # Extract workout info from parsed_workout or raw_data
+            raw_data = item.get("raw_data") or {}
+
+            # Get title from workout data or generate default
+            title = (
+                workout_data.get("title") or
+                workout_data.get("name") or
+                raw_data.get("title") or
+                f"Workout {item.get('source_index', 0) + 1}"
+            )
+
+            # Count exercises from all possible structures
+            exercise_count = 0
+            block_count = 0
+
+            # Handle direct exercises on workout (from CSV parser)
+            direct_exercises = workout_data.get("exercises") or []
+            exercise_count += len(direct_exercises)
+            if direct_exercises:
+                block_count = 1  # Treat as single block
+
+            # Handle workouts array (from multi-workout files)
+            for sub_workout in workout_data.get("workouts") or []:
+                sub_exercises = sub_workout.get("exercises") or []
+                exercise_count += len(sub_exercises)
+                if sub_exercises:
+                    block_count += 1
+
+            # Handle blocks structure (from URL/image parsers)
+            blocks = workout_data.get("blocks") or []
+            block_count += len(blocks)
+            for block in blocks:
+                exercises = block.get("exercises") or []
+                exercise_count += len(exercises)
+                # Also count superset exercises
+                for superset in block.get("supersets") or []:
+                    exercise_count += len(superset.get("exercises") or [])
 
             if is_selected:
                 stats.total_selected += 1
+                total_exercises += exercise_count
             else:
                 stats.total_skipped += 1
-
-            workout_data = item.get("parsed_workout", {})
 
             preview = PreviewWorkout(
                 id=str(uuid.uuid4()),
                 detected_item_id=item["id"],
-                title=item.get("parsed_title", f"Workout {item['source_index'] + 1}"),
+                title=title,
                 description=workout_data.get("description"),
-                exercise_count=item.get("parsed_exercise_count", 0),
-                block_count=item.get("parsed_block_count", 0),
+                exercise_count=exercise_count,
+                block_count=block_count,
                 validation_issues=[],
                 workout=workout_data,
                 selected=is_selected,
@@ -1302,6 +1444,17 @@ class BulkImportService:
             previews.append(preview)
 
         stats.total_detected = len(detected)
+        stats.exercises_matched = total_exercises
+
+        logger.info(f"Preview generated: {stats.total_selected} selected, {total_exercises} exercises")
+
+        # Debug: Log first preview workout data
+        if previews:
+            first_preview = previews[0]
+            workout_dict = first_preview.workout if hasattr(first_preview, 'workout') else {}
+            logger.info(f"First preview workout keys: {list(workout_dict.keys()) if workout_dict else 'empty'}")
+            if workout_dict.get("exercises"):
+                logger.info(f"  First preview has {len(workout_dict['exercises'])} exercises")
 
         return BulkPreviewResponse(
             success=True,
@@ -1328,12 +1481,28 @@ class BulkImportService:
         In async mode, creates a background job and returns immediately.
         In sync mode, processes all workouts before returning.
         """
-        # Create import job entry
-        import_job_id = str(uuid.uuid4())
+        # Validate job exists and has detected items
+        detected = self._get_detected_items(job_id, profile_id)
+        if not detected:
+            logger.warning(f"Execute import failed: job {job_id} not found or has no items")
+            return BulkExecuteResponse(
+                success=False,
+                job_id=job_id,
+                status="not_found",
+                message="Import session expired. Please start a new import.",
+            )
+
+        # Validate workout IDs exist in detected items
+        detected_ids = {item["id"] for item in detected}
+        missing_ids = [wid for wid in workout_ids if wid not in detected_ids]
+        if missing_ids:
+            logger.warning(f"Execute import: {len(missing_ids)} workout IDs not found in detected items")
 
         self._update_job_status(
             job_id, profile_id, "running",
-            target_device=device
+            target_device=device,
+            total_items=len(workout_ids),  # Set total for progress calculation
+            processed_items=0  # Reset processed count
         )
 
         if async_mode:
@@ -1444,22 +1613,371 @@ class BulkImportService:
 
         return results
 
+    def _transform_to_workout_structure(
+        self,
+        item: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Transform detected item into WorkoutStructure format for mapper-api.
+
+        The mapper-api expects workout_data in this format:
+        {
+            "title": "Workout Title",
+            "source": "bulk_import",
+            "blocks": [
+                {
+                    "label": "Main",
+                    "structure": "3 sets" or None,
+                    "exercises": [...],
+                    "supersets": [...]
+                }
+            ]
+        }
+
+        This handles:
+        - CSV parser output (flat exercises list)
+        - Image/URL parser output (already has blocks)
+
+        Note: Multi-workout files (workouts array) are handled separately
+        in _import_single_workout to save each as a separate workout.
+        """
+        workout_data = item.get("parsed_workout") or {}
+        raw_data = item.get("raw_data") or {}
+
+        # Get title
+        title = (
+            workout_data.get("title") or
+            workout_data.get("name") or
+            raw_data.get("title") or
+            item.get("parsed_title") or
+            f"Workout {item.get('source_index', 0) + 1}"
+        )
+
+        # If workout already has blocks structure, use it directly
+        if workout_data.get("blocks"):
+            return {
+                "title": title,
+                "source": f"bulk_import:{item.get('source_type', 'file')}",
+                "blocks": workout_data["blocks"],
+            }
+
+        # Build blocks from exercises
+        blocks = []
+
+        # Handle direct exercises on workout (from CSV parser - single workout)
+        direct_exercises = workout_data.get("exercises") or []
+        if direct_exercises:
+            # Transform exercises to the expected format
+            transformed_exercises = []
+            for ex in direct_exercises:
+                exercise_name = ex.get("garmin_name") or ex.get("name") or ex.get("raw_name", "Unknown Exercise")
+                # Infer type if not provided
+                exercise_type = ex.get("type") or self._infer_exercise_type(exercise_name)
+
+                transformed_ex = {
+                    "name": exercise_name,
+                    "sets": ex.get("sets"),
+                    "reps": ex.get("reps"),
+                    "reps_range": ex.get("reps_range"),
+                    "duration_sec": ex.get("duration_sec"),
+                    "rest_sec": ex.get("rest_sec"),
+                    "distance_m": ex.get("distance_m"),
+                    "weight_kg": ex.get("weight_kg"),
+                    "type": exercise_type,
+                }
+                transformed_exercises.append(transformed_ex)
+
+            blocks.append({
+                "label": "Main",
+                "structure": None,
+                "exercises": transformed_exercises,
+                "supersets": [],
+            })
+
+        # If no blocks were created, create an empty placeholder
+        if not blocks:
+            blocks.append({
+                "label": "Main",
+                "structure": None,
+                "exercises": [],
+                "supersets": [],
+            })
+
+        return {
+            "title": title,
+            "source": f"bulk_import:{item.get('source_type', 'file')}",
+            "blocks": blocks,
+        }
+
+    async def _save_workout_to_api(
+        self,
+        workout_data: Dict[str, Any],
+        profile_id: str,
+        device: str,
+        source_ref: str,
+    ) -> Optional[str]:
+        """
+        Save workout to mapper-api /workouts/save endpoint.
+
+        Args:
+            workout_data: Transformed workout structure with blocks
+            profile_id: User profile ID
+            device: Target device (e.g., "EDGE_1040")
+            source_ref: Source reference for tracking
+
+        Returns:
+            Saved workout ID if successful, None if failed
+        """
+        try:
+            payload = {
+                "profile_id": profile_id,
+                "workout_data": workout_data,
+                "sources": [source_ref],
+                "device": device,
+                "title": workout_data.get("title"),
+            }
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{MAPPER_API_URL}/workouts/save",
+                    json=payload
+                )
+
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("success"):
+                        return result.get("workout_id")
+                    else:
+                        logger.error(f"Mapper API save failed: {result.get('message')}")
+                else:
+                    logger.error(f"Mapper API returned {response.status_code}: {response.text}")
+
+        except Exception as e:
+            logger.error(f"Failed to save workout to API: {e}")
+
+        return None
+
+    def _infer_exercise_type(self, exercise_name: str) -> str:
+        """
+        Infer exercise type based on exercise name.
+
+        Returns:
+            "cardio" for running, biking, swimming, etc.
+            "strength" for weight exercises (default)
+        """
+        if not exercise_name:
+            return "strength"
+
+        name_lower = exercise_name.lower()
+
+        # Cardio/running patterns
+        cardio_keywords = [
+            "run", "running", "jog", "jogging", "sprint",
+            "bike", "biking", "cycle", "cycling",
+            "swim", "swimming",
+            "row", "rowing", "ski", "skiing", "erg",
+            "walk", "walking", "hike", "hiking",
+            "cardio", "aerobic",
+            "jump rope", "skipping",
+            "stair", "stairs", "stepper",
+            "elliptical", "treadmill",
+        ]
+
+        # Distance/time based activities (often cardio)
+        distance_keywords = [
+            "m run", "km run", "mile",
+            "meter", "metres", "meters",
+        ]
+
+        # Check for cardio keywords
+        for keyword in cardio_keywords:
+            if keyword in name_lower:
+                return "cardio"
+
+        # Check for distance keywords
+        for keyword in distance_keywords:
+            if keyword in name_lower:
+                return "cardio"
+
+        # Conditioning exercises (can be strength or cardio - default to cardio for HYROX-style)
+        conditioning_keywords = [
+            "sled push", "sled pull", "farmers carry", "farmer carry",
+            "wall ball", "burpee", "box jump",
+            "kettlebell swing", "kb swing",
+            "battle rope", "rope climb",
+            "assault bike", "airbike", "air bike",
+        ]
+
+        for keyword in conditioning_keywords:
+            if keyword in name_lower:
+                return "cardio"
+
+        # Default to strength
+        return "strength"
+
+    def _transform_single_workout_to_structure(
+        self,
+        workout: Dict[str, Any],
+        source_type: str,
+        fallback_title: str,
+    ) -> Dict[str, Any]:
+        """
+        Transform a single workout dict (from workouts array or direct) into WorkoutStructure.
+
+        This handles the case where we have a workout with exercises directly,
+        not wrapped in blocks.
+        """
+        title = workout.get("name") or workout.get("title") or fallback_title
+        exercises = workout.get("exercises") or []
+
+        # Transform exercises to the expected format
+        transformed_exercises = []
+        for ex in exercises:
+            exercise_name = ex.get("garmin_name") or ex.get("name") or ex.get("raw_name", "Unknown Exercise")
+            # Infer type if not provided
+            exercise_type = ex.get("type") or self._infer_exercise_type(exercise_name)
+
+            transformed_ex = {
+                "name": exercise_name,
+                "sets": ex.get("sets"),
+                "reps": ex.get("reps"),
+                "reps_range": ex.get("reps_range"),
+                "duration_sec": ex.get("duration_sec"),
+                "rest_sec": ex.get("rest_sec"),
+                "distance_m": ex.get("distance_m"),
+                "weight_kg": ex.get("weight_kg"),
+                "type": exercise_type,
+            }
+            transformed_exercises.append(transformed_ex)
+
+        return {
+            "title": title,
+            "source": f"bulk_import:{source_type}",
+            "blocks": [{
+                "label": "Main",
+                "structure": None,
+                "exercises": transformed_exercises,
+                "supersets": [],
+            }],
+        }
+
     async def _import_single_workout(
         self,
         item: Dict[str, Any],
         profile_id: str,
         device: str
     ) -> ImportResult:
-        """Import a single workout"""
-        # TODO: Implement using database.save_workout()
-        # This will be integrated with existing workout saving
+        """
+        Import workout(s) from a detected item.
 
-        return ImportResult(
-            workout_id=item["id"],
-            title=item.get("parsed_title", "Unknown"),
-            status="success",
-            saved_workout_id=str(uuid.uuid4()),  # Placeholder
-        )
+        Handles two cases:
+        1. Single workout - save directly
+        2. Multi-workout file (workouts array) - save each as separate workout
+
+        Steps:
+        1. Check if item has multiple workouts
+        2. Transform each to WorkoutStructure format
+        3. Save to mapper-api /workouts/save endpoint
+        4. Return result with saved workout ID(s)
+        """
+        title = item.get("parsed_title", "Unknown")
+        source_ref = item.get("source_ref", "")
+        source_type = item.get("source_type", "file")
+        workout_data = item.get("parsed_workout") or {}
+
+        try:
+            # Check if this is a multi-workout file
+            workouts_array = workout_data.get("workouts") or []
+
+            if workouts_array:
+                # Multi-workout file - save each workout separately
+                saved_ids = []
+                failed_titles = []
+
+                for idx, sub_workout in enumerate(workouts_array):
+                    sub_title = sub_workout.get("name") or sub_workout.get("title") or f"Workout {idx + 1}"
+
+                    # Transform this individual workout
+                    workout_structure = self._transform_single_workout_to_structure(
+                        workout=sub_workout,
+                        source_type=source_type,
+                        fallback_title=sub_title,
+                    )
+
+                    # Save to API
+                    saved_id = await self._save_workout_to_api(
+                        workout_data=workout_structure,
+                        profile_id=profile_id,
+                        device=device,
+                        source_ref=f"{source_ref}:{idx}",
+                    )
+
+                    if saved_id:
+                        saved_ids.append(saved_id)
+                        logger.info(f"Successfully saved workout '{sub_title}' with ID {saved_id}")
+                    else:
+                        failed_titles.append(sub_title)
+                        logger.error(f"Failed to save workout '{sub_title}'")
+
+                # Return combined result
+                if saved_ids and not failed_titles:
+                    return ImportResult(
+                        workout_id=item["id"],
+                        title=f"{len(saved_ids)} workouts imported",
+                        status="success",
+                        saved_workout_id=",".join(saved_ids),
+                    )
+                elif saved_ids:
+                    return ImportResult(
+                        workout_id=item["id"],
+                        title=f"{len(saved_ids)} imported, {len(failed_titles)} failed",
+                        status="success",
+                        saved_workout_id=",".join(saved_ids),
+                        error=f"Failed: {', '.join(failed_titles)}",
+                    )
+                else:
+                    return ImportResult(
+                        workout_id=item["id"],
+                        title=title,
+                        status="failed",
+                        error="All workouts failed to save",
+                    )
+            else:
+                # Single workout - use existing transform method
+                workout_structure = self._transform_to_workout_structure(item)
+
+                # Save to API
+                saved_id = await self._save_workout_to_api(
+                    workout_data=workout_structure,
+                    profile_id=profile_id,
+                    device=device,
+                    source_ref=source_ref,
+                )
+
+                if saved_id:
+                    logger.info(f"Successfully saved workout '{title}' with ID {saved_id}")
+                    return ImportResult(
+                        workout_id=item["id"],
+                        title=title,
+                        status="success",
+                        saved_workout_id=saved_id,
+                    )
+                else:
+                    return ImportResult(
+                        workout_id=item["id"],
+                        title=title,
+                        status="failed",
+                        error="Failed to save workout to database",
+                    )
+
+        except Exception as e:
+            logger.exception(f"Error importing workout '{title}': {e}")
+            return ImportResult(
+                workout_id=item["id"],
+                title=title,
+                status="failed",
+                error=str(e),
+            )
 
     # ========================================================================
     # Status & Control
