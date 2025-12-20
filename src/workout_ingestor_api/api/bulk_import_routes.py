@@ -56,7 +56,7 @@ async def bulk_import_detect(request: BulkDetectRequest):
 
     Accepts:
     - file: Base64-encoded file content (Excel, CSV, JSON, Text)
-    - urls: List of URLs (YouTube, Instagram, TikTok)
+    - urls: List of URLs (YouTube, Instagram, TikTok, Pinterest)
     - images: Base64-encoded image data for OCR
 
     Returns detected items with confidence scores and any parsing errors.
@@ -114,6 +114,7 @@ async def bulk_import_detect_urls(
     - YouTube (youtube.com, youtu.be)
     - Instagram (instagram.com/p/, /reel/, /tv/)
     - TikTok (tiktok.com, vm.tiktok.com)
+    - Pinterest (pinterest.com/pin/, pin.it/) - supports multi-workout plans
 
     Fetches metadata using oEmbed APIs for quick preview.
     Full workout extraction happens during the import step.

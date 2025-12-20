@@ -200,8 +200,9 @@ class ImageParser:
 
                 if response.status_code == 200:
                     result = response.json()
-                    workout = result.get("workout", {})
-                    metadata = result.get("metadata", {})
+                    # Response may have workout data at root level or under "workout" key
+                    workout = result.get("workout") or result
+                    metadata = result.get("_provenance", {}) or result.get("metadata", {})
 
                     # Calculate confidence based on exercise count and completeness
                     confidence = cls._calculate_confidence(workout)
