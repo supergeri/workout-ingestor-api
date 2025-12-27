@@ -359,7 +359,7 @@ class BulkImportService:
     def _get_supabase_client(self):
         """Get Supabase client from database module"""
         try:
-            from backend.database import get_supabase_client
+            from workout_ingestor_api.services.youtube_cache_service import get_supabase_client
             return get_supabase_client()
         except Exception as e:
             logger.warning(f"Could not get Supabase client: {e}")
