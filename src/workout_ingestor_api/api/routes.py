@@ -42,6 +42,7 @@ from workout_ingestor_api.services.tiktok_service import (
     TikTokService,
     TikTokServiceError,
 )
+from workout_ingestor_api.services.tiktok_cache_service import TikTokCacheService
 from workout_ingestor_api.services.pinterest_service import (
     PinterestService,
     PinterestServiceError,
@@ -106,6 +107,7 @@ class TikTokIngestRequest(BaseModel):
     vision_provider: str = "openai"
     vision_model: Optional[str] = "gpt-4o-mini"
     mode: str = "oembed"  # "oembed" (default) | "auto" | "hybrid" | "audio_only" | "vision_only"
+    skip_cache: bool = False  # Skip cache lookup (still saves to cache)
 
 
 class PinterestIngestRequest(BaseModel):
@@ -1029,6 +1031,38 @@ async def get_cached_youtube_workout(video_id: str):
     return JSONResponse(cached)
 
 
+@router.get("/tiktok/cache/stats")
+async def get_tiktok_cache_stats():
+    """
+    Get TikTok workout cache statistics.
+
+    Returns:
+        platform: "tiktok"
+        total_cached: Number of cached workouts
+        total_cache_hits: Total cache hits across all workouts
+    """
+    stats = TikTokCacheService.get_cache_stats()
+    return JSONResponse(stats)
+
+
+@router.get("/tiktok/cache/{video_id}")
+async def get_cached_tiktok_workout(video_id: str):
+    """
+    Get a specific cached TikTok workout by video ID.
+
+    Args:
+        video_id: TikTok video ID (numeric string)
+
+    Returns:
+        Cached workout data or 404 if not found
+    """
+    cached = TikTokCacheService.get_cached_workout(video_id)
+    if not cached:
+        raise HTTPException(status_code=404, detail="TikTok workout not found in cache")
+
+    return JSONResponse(cached)
+
+
 # ---------------------------------------------------------------------------
 # TikTok ingest with Audio Transcription + Vision AI support
 # ---------------------------------------------------------------------------
@@ -1154,9 +1188,40 @@ async def ingest_tiktok(payload: TikTokIngestRequest):
 
     url = payload.url
     ingest_mode = payload.mode
+    skip_cache = payload.skip_cache
 
     if not TikTokService.is_tiktok_url(url):
         raise HTTPException(status_code=400, detail="Invalid TikTok URL")
+
+    # Extract video ID for cache lookup
+    video_id = TikTokService.extract_video_id(url)
+
+    # Check cache first (unless skip_cache is True)
+    if video_id and not skip_cache:
+        cached = TikTokCacheService.get_cached_workout(video_id)
+        if cached:
+            logger.info(f"Returning cached TikTok workout for video_id: {video_id}")
+            TikTokCacheService.increment_cache_hit(video_id)
+
+            # Build response from cached data
+            workout_data = cached.get("workout_data", {})
+
+            # Ensure source is set
+            if not workout_data.get("source"):
+                workout_data["source"] = url
+
+            response_payload = workout_data.copy()
+            response_payload.setdefault("_provenance", {})
+            response_payload["_provenance"].update({
+                "mode": "cached",
+                "source_url": url,
+                "video_id": video_id,
+                "cached_at": cached.get("ingested_at"),
+                "cache_hits": (cached.get("cache_hits", 0) or 0) + 1,
+                "original_processing_method": cached.get("processing_method"),
+            })
+
+            return JSONResponse(response_payload)
 
     # Get metadata via oEmbed (works for all modes)
     try:
@@ -1224,6 +1289,30 @@ async def ingest_tiktok(payload: TikTokIngestRequest):
             "video_id": metadata.video_id,
             "author": metadata.author_name,
         }
+
+        # Save to cache for future lookups
+        if video_id:
+            try:
+                normalized_url = TikTokService.normalize_url(url)
+                video_metadata = {
+                    "title": metadata.title,
+                    "author_name": metadata.author_name,
+                    "author_url": metadata.author_url,
+                    "thumbnail_url": metadata.thumbnail_url,
+                }
+                TikTokCacheService.save_cached_workout(
+                    video_id=video_id,
+                    source_url=url,
+                    normalized_url=normalized_url,
+                    video_metadata=video_metadata,
+                    workout_data=response,
+                    processing_method=mode,
+                )
+                logger.info(f"Cached TikTok workout for video_id: {video_id}")
+            except Exception as e:
+                # Cache save failure should not fail the request
+                logger.warning(f"Failed to cache TikTok workout for video_id {video_id}: {e}")
+
         return JSONResponse(response)
 
     # --- Video-based modes (auto, hybrid, audio_only, vision_only) ---
