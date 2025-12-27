@@ -23,8 +23,10 @@ from fastapi import (
     Body,
     HTTPException,
     Query,
+    Depends,
 )
 from fastapi.responses import JSONResponse, Response
+from workout_ingestor_api.auth import get_current_user, get_optional_user
 from pydantic import BaseModel
 
 from workout_ingestor_api.models import Workout, Block, Exercise
@@ -357,6 +359,7 @@ async def ingest_text(
     text: str = Form(...),
     source: Optional[str] = Form(None),
     return_filtered: bool = Form(False),
+    user_id: Optional[str] = Depends(get_optional_user),
 ):
     """Ingest workout from plain text."""
     result = ParserService.parse_free_text_to_workout(
