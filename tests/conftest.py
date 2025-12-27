@@ -25,6 +25,20 @@ for p in {ROOT, SRC}:
 
 # Import FastAPI app (main.py at repo root)
 from main import app
+from workout_ingestor_api.auth import get_current_user
+
+
+# ---------------------------------------------------------------------------
+# Auth Mock
+# ---------------------------------------------------------------------------
+
+
+TEST_USER_ID = "test-user-123"
+
+
+async def mock_get_current_user() -> str:
+    """Mock auth dependency that returns a test user."""
+    return TEST_USER_ID
 
 
 # ---------------------------------------------------------------------------
@@ -35,12 +49,16 @@ from main import app
 @pytest.fixture(scope="session")
 def api_client() -> TestClient:
     """Shared FastAPI TestClient for workout-ingestor-api."""
+    # Override auth dependency for all tests
+    app.dependency_overrides[get_current_user] = mock_get_current_user
     return TestClient(app)
 
 
 @pytest.fixture
 def client() -> TestClient:
     """Per-test FastAPI TestClient (for tests needing fresh state)."""
+    # Override auth dependency for all tests
+    app.dependency_overrides[get_current_user] = mock_get_current_user
     return TestClient(app)
 
 
