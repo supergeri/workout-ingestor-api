@@ -16,8 +16,8 @@ from unittest.mock import patch, MagicMock
 
 
 @pytest.fixture
-def mock_anthropic_response():
-    """Mock Anthropic Claude API response for voice parsing."""
+def mock_openai_voice_response():
+    """Mock OpenAI chat completion response for voice parsing."""
     return {
         "name": "4x400m Interval Workout",
         "sport": "running",
@@ -43,22 +43,24 @@ def mock_anthropic_response():
 
 
 @pytest.fixture
-def mock_anthropic_client(mock_anthropic_response):
-    """Mock the Anthropic client for voice parsing tests."""
-    with patch("workout_ingestor_api.services.voice_parsing_service.Anthropic") as mock_class:
+def mock_openai_voice_client(mock_openai_voice_response):
+    """Mock the OpenAI client for voice parsing tests."""
+    with patch("workout_ingestor_api.services.voice_parsing_service.OpenAI") as mock_class:
         mock_instance = MagicMock()
-        mock_message = MagicMock()
-        mock_message.content = [MagicMock(text=json.dumps(mock_anthropic_response))]
-        mock_instance.messages.create.return_value = mock_message
+        mock_choice = MagicMock()
+        mock_choice.message.content = json.dumps(mock_openai_voice_response)
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+        mock_instance.chat.completions.create.return_value = mock_response
         mock_class.return_value = mock_instance
         yield mock_instance
 
 
 @pytest.fixture
-def mock_anthropic_available():
-    """Mock anthropic as available."""
+def mock_openai_available():
+    """Mock openai as available."""
     with patch(
-        "workout_ingestor_api.services.voice_parsing_service.ANTHROPIC_AVAILABLE",
+        "workout_ingestor_api.services.voice_parsing_service.OPENAI_AVAILABLE",
         True,
     ):
         yield
@@ -73,10 +75,10 @@ class TestParseVoiceEndpoint:
     """Tests for /workouts/parse-voice endpoint."""
 
     def test_parse_running_workout(
-        self, client, mock_anthropic_client, mock_anthropic_available, monkeypatch
+        self, client, mock_openai_voice_client, mock_openai_available, monkeypatch
     ):
         """Test parsing a running interval workout."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
 
         response = client.post(
             "/workouts/parse-voice",
@@ -98,10 +100,10 @@ class TestParseVoiceEndpoint:
         assert "suggestions" in data
 
     def test_parse_strength_workout(
-        self, client, mock_anthropic_available, monkeypatch
+        self, client, mock_openai_available, monkeypatch
     ):
         """Test parsing a strength workout."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
 
         # Mock response for strength workout
         strength_response = {
@@ -133,11 +135,13 @@ class TestParseVoiceEndpoint:
             "suggestions": ["Rest periods estimated at 90 seconds"],
         }
 
-        with patch("workout_ingestor_api.services.voice_parsing_service.Anthropic") as mock_class:
+        with patch("workout_ingestor_api.services.voice_parsing_service.OpenAI") as mock_class:
             mock_instance = MagicMock()
-            mock_message = MagicMock()
-            mock_message.content = [MagicMock(text=json.dumps(strength_response))]
-            mock_instance.messages.create.return_value = mock_message
+            mock_choice = MagicMock()
+            mock_choice.message.content = json.dumps(strength_response)
+            mock_response = MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_instance.chat.completions.create.return_value = mock_response
             mock_class.return_value = mock_instance
 
             response = client.post(
@@ -157,10 +161,10 @@ class TestParseVoiceEndpoint:
         assert data["workout"]["intervals"][0]["kind"] == "reps"
 
     def test_parse_without_sport_hint(
-        self, client, mock_anthropic_client, mock_anthropic_available, monkeypatch
+        self, client, mock_openai_voice_client, mock_openai_available, monkeypatch
     ):
         """Test parsing without sport_hint - should still work."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
 
         response = client.post(
             "/workouts/parse-voice",
@@ -183,9 +187,9 @@ class TestParseVoiceEndpoint:
         # Should return 422 or 500 depending on validation
         assert response.status_code in [422, 500]
 
-    def test_parse_too_short_transcription(self, client, mock_anthropic_available, monkeypatch):
+    def test_parse_too_short_transcription(self, client, mock_openai_available, monkeypatch):
         """Test parsing with very short transcription returns error."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
 
         response = client.post(
             "/workouts/parse-voice",
@@ -197,9 +201,9 @@ class TestParseVoiceEndpoint:
         assert data["success"] is False
         assert "error" in data
 
-    def test_parse_missing_api_key(self, client, mock_anthropic_available, monkeypatch):
+    def test_parse_missing_api_key(self, client, mock_openai_available, monkeypatch):
         """Test parsing without API key returns error."""
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         response = client.post(
             "/workouts/parse-voice",
@@ -220,10 +224,10 @@ class TestVoiceParsingService:
     """Unit tests for VoiceParsingService."""
 
     def test_service_handles_json_in_markdown(
-        self, mock_anthropic_available, monkeypatch
+        self, mock_openai_available, monkeypatch
     ):
         """Test that service extracts JSON from markdown-wrapped response."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
 
         markdown_response = """Here's the parsed workout:
 
@@ -246,11 +250,13 @@ class TestVoiceParsingService:
 
 Let me know if you need any adjustments!"""
 
-        with patch("workout_ingestor_api.services.voice_parsing_service.Anthropic") as mock_class:
+        with patch("workout_ingestor_api.services.voice_parsing_service.OpenAI") as mock_class:
             mock_instance = MagicMock()
-            mock_message = MagicMock()
-            mock_message.content = [MagicMock(text=markdown_response)]
-            mock_instance.messages.create.return_value = mock_message
+            mock_choice = MagicMock()
+            mock_choice.message.content = markdown_response
+            mock_response = MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_instance.chat.completions.create.return_value = mock_response
             mock_class.return_value = mock_instance
 
             from workout_ingestor_api.services.voice_parsing_service import (
@@ -266,16 +272,18 @@ Let me know if you need any adjustments!"""
         assert result.workout["sport"] == "hiit"
 
     def test_service_returns_error_for_invalid_json(
-        self, mock_anthropic_available, monkeypatch
+        self, mock_openai_available, monkeypatch
     ):
         """Test that service handles invalid JSON response gracefully."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
 
-        with patch("workout_ingestor_api.services.voice_parsing_service.Anthropic") as mock_class:
+        with patch("workout_ingestor_api.services.voice_parsing_service.OpenAI") as mock_class:
             mock_instance = MagicMock()
-            mock_message = MagicMock()
-            mock_message.content = [MagicMock(text="This is not valid JSON at all")]
-            mock_instance.messages.create.return_value = mock_message
+            mock_choice = MagicMock()
+            mock_choice.message.content = "This is not valid JSON at all"
+            mock_response = MagicMock()
+            mock_response.choices = [mock_choice]
+            mock_instance.chat.completions.create.return_value = mock_response
             mock_class.return_value = mock_instance
 
             from workout_ingestor_api.services.voice_parsing_service import (
@@ -299,10 +307,10 @@ class TestResponseFormat:
     """Tests for response format matching iOS expectations."""
 
     def test_workout_has_required_fields(
-        self, client, mock_anthropic_client, mock_anthropic_available, monkeypatch
+        self, client, mock_openai_voice_client, mock_openai_available, monkeypatch
     ):
         """Test that workout response has all required iOS fields."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
 
         response = client.post(
             "/workouts/parse-voice",
@@ -327,10 +335,10 @@ class TestResponseFormat:
         assert isinstance(workout["intervals"], list)
 
     def test_interval_types_match_spec(
-        self, client, mock_anthropic_client, mock_anthropic_available, monkeypatch
+        self, client, mock_openai_voice_client, mock_openai_available, monkeypatch
     ):
         """Test that interval types match AMA-5 specification."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-api-key")
 
         response = client.post(
             "/workouts/parse-voice",

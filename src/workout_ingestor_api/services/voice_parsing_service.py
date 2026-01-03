@@ -1,4 +1,4 @@
-"""Voice workout parsing service using Claude API.
+"""Voice workout parsing service using OpenAI API.
 
 Parses natural language workout descriptions into structured workout data
 compatible with iOS WorkoutKit intervals format.
@@ -15,11 +15,11 @@ logger = logging.getLogger(__name__)
 
 # Optional dependencies
 try:
-    from anthropic import Anthropic
-    ANTHROPIC_AVAILABLE = True
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
 except ImportError:
-    ANTHROPIC_AVAILABLE = False
-    Anthropic = None
+    OPENAI_AVAILABLE = False
+    OpenAI = None
 
 
 @dataclass
@@ -143,7 +143,7 @@ Return ONLY the JSON object, no additional text or markdown formatting."""
         transcription: str,
         sport_hint: Optional[str] = None,
         api_key: Optional[str] = None,
-        model: str = "claude-sonnet-4-20250514"
+        model: str = "gpt-4-turbo"
     ) -> VoiceParseResult:
         """
         Parse a voice transcription into structured workout data.
@@ -151,23 +151,23 @@ Return ONLY the JSON object, no additional text or markdown formatting."""
         Args:
             transcription: The transcribed text from voice input
             sport_hint: Optional hint about the sport type
-            api_key: Anthropic API key (or use ANTHROPIC_API_KEY env var)
-            model: Claude model to use
+            api_key: OpenAI API key (or use OPENAI_API_KEY env var)
+            model: OpenAI model to use (default: gpt-4-turbo)
 
         Returns:
             VoiceParseResult with parsed workout or error
         """
-        if not ANTHROPIC_AVAILABLE:
+        if not OPENAI_AVAILABLE:
             return VoiceParseResult(
                 success=False,
-                error="Anthropic library not installed. Run: pip install anthropic"
+                error="OpenAI library not installed. Run: pip install openai"
             )
 
-        api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
+        api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
             return VoiceParseResult(
                 success=False,
-                error="Anthropic API key not provided. Set ANTHROPIC_API_KEY environment variable."
+                error="OpenAI API key not provided. Set OPENAI_API_KEY environment variable."
             )
 
         # Validate transcription
@@ -183,21 +183,22 @@ Return ONLY the JSON object, no additional text or markdown formatting."""
         if sport_hint:
             user_content += f"\n\nSport type hint: {sport_hint}"
 
-        client = Anthropic(api_key=api_key, timeout=60.0)
+        client = OpenAI(api_key=api_key, timeout=60.0)
 
         try:
-            message = client.messages.create(
+            response = client.chat.completions.create(
                 model=model,
                 max_tokens=4096,
                 messages=[
-                    {"role": "user", "content": f"{cls.VOICE_WORKOUT_PROMPT}\n\n{user_content}"}
+                    {"role": "system", "content": cls.VOICE_WORKOUT_PROMPT},
+                    {"role": "user", "content": user_content}
                 ],
                 temperature=0.1,
             )
 
-            result_text = message.content[0].text
+            result_text = response.choices[0].message.content
 
-            # Extract JSON from response (Claude may add markdown formatting)
+            # Extract JSON from response (model may add markdown formatting)
             json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
             if json_match:
                 workout_data = json.loads(json_match.group(0))
@@ -228,7 +229,7 @@ Return ONLY the JSON object, no additional text or markdown formatting."""
             )
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Claude response as JSON: {e}")
+            logger.error(f"Failed to parse OpenAI response as JSON: {e}")
             return VoiceParseResult(
                 success=False,
                 error="Failed to parse workout structure",
