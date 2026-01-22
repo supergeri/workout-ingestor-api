@@ -140,8 +140,29 @@ class TestHeliconeProxyFailure:
         from workout_ingestor_api.ai.retry import is_retryable_error
 
         error = Exception("Failed to resolve oai.helicone.ai: Name or service not known")
-        # This would be a connection error
-        assert is_retryable_error(error) is False  # Generic message, not matched
+        # DNS failures are transient network issues and should be retried
+        assert is_retryable_error(error) is True
+
+    def test_dns_getaddrinfo_failure_is_retryable(self):
+        """getaddrinfo failures should be retryable."""
+        from workout_ingestor_api.ai.retry import is_retryable_error
+
+        error = Exception("getaddrinfo failed for api.openai.com")
+        assert is_retryable_error(error) is True
+
+    def test_dns_nodename_failure_is_retryable(self):
+        """macOS-style DNS failures should be retryable."""
+        from workout_ingestor_api.ai.retry import is_retryable_error
+
+        error = Exception("nodename nor servname provided, or not known")
+        assert is_retryable_error(error) is True
+
+    def test_temporary_dns_failure_is_retryable(self):
+        """Temporary name resolution failures should be retryable."""
+        from workout_ingestor_api.ai.retry import is_retryable_error
+
+        error = Exception("Temporary failure in name resolution")
+        assert is_retryable_error(error) is True
 
     def test_ssl_error_is_not_retryable(self):
         """SSL certificate errors should not be retried."""

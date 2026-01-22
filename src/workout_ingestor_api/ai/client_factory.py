@@ -8,9 +8,9 @@ from workout_ingestor_api.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Helicone proxy URLs
-HELICONE_OPENAI_BASE_URL = "https://oai.helicone.ai/v1"
-HELICONE_ANTHROPIC_BASE_URL = "https://anthropic.helicone.ai"
+# Helicone proxy URLs (private - implementation detail)
+_HELICONE_OPENAI_BASE_URL = "https://oai.helicone.ai/v1"
+_HELICONE_ANTHROPIC_BASE_URL = "https://anthropic.helicone.ai"
 
 # Default client timeout
 DEFAULT_TIMEOUT = 60.0
@@ -26,8 +26,13 @@ class AIRequestContext:
     request_id: str | None = None
     custom_properties: dict[str, str] = field(default_factory=dict)
 
-    def to_helicone_headers(self) -> dict[str, str]:
-        """Convert context to Helicone-specific headers."""
+    def to_tracking_headers(self) -> dict[str, str]:
+        """Convert context to provider-specific tracking headers.
+
+        Currently generates Helicone headers when Helicone is enabled.
+        The public API is provider-agnostic to allow future observability
+        provider changes without affecting callers.
+        """
         headers: dict[str, str] = {}
 
         if self.user_id:
@@ -91,23 +96,30 @@ class AIClientFactory:
         }
 
         # If Helicone is enabled and configured, proxy through it
-        if settings.HELICONE_ENABLED and settings.HELICONE_API_KEY:
-            client_kwargs["base_url"] = HELICONE_OPENAI_BASE_URL
+        if settings.HELICONE_ENABLED:
+            if not settings.HELICONE_API_KEY:
+                logger.warning(
+                    "HELICONE_ENABLED=true but HELICONE_API_KEY not set. "
+                    "Falling back to direct OpenAI API calls."
+                )
+            else:
+                client_kwargs["base_url"] = _HELICONE_OPENAI_BASE_URL
 
-            # Build default headers with Helicone auth
-            default_headers = {
-                "Helicone-Auth": f"Bearer {settings.HELICONE_API_KEY}",
-            }
+                # Build default headers with Helicone auth
+                default_headers = {
+                    "Helicone-Auth": f"Bearer {settings.HELICONE_API_KEY}",
+                }
 
-            # Add context headers if provided
-            if context:
-                default_headers.update(context.to_helicone_headers())
+                # Add context headers if provided
+                if context:
+                    default_headers.update(context.to_tracking_headers())
 
-            client_kwargs["default_headers"] = default_headers
+                client_kwargs["default_headers"] = default_headers
 
-            logger.debug("Creating OpenAI client with Helicone proxy")
-        else:
-            logger.debug("Creating OpenAI client (direct)")
+                logger.debug("Creating OpenAI client with Helicone proxy")
+                return openai.OpenAI(**client_kwargs)
+
+        logger.debug("Creating OpenAI client (direct)")
 
         return openai.OpenAI(**client_kwargs)
 
@@ -146,22 +158,29 @@ class AIClientFactory:
         }
 
         # If Helicone is enabled and configured, proxy through it
-        if settings.HELICONE_ENABLED and settings.HELICONE_API_KEY:
-            client_kwargs["base_url"] = HELICONE_ANTHROPIC_BASE_URL
+        if settings.HELICONE_ENABLED:
+            if not settings.HELICONE_API_KEY:
+                logger.warning(
+                    "HELICONE_ENABLED=true but HELICONE_API_KEY not set. "
+                    "Falling back to direct Anthropic API calls."
+                )
+            else:
+                client_kwargs["base_url"] = _HELICONE_ANTHROPIC_BASE_URL
 
-            # Build default headers with Helicone auth
-            default_headers = {
-                "Helicone-Auth": f"Bearer {settings.HELICONE_API_KEY}",
-            }
+                # Build default headers with Helicone auth
+                default_headers = {
+                    "Helicone-Auth": f"Bearer {settings.HELICONE_API_KEY}",
+                }
 
-            # Add context headers if provided
-            if context:
-                default_headers.update(context.to_helicone_headers())
+                # Add context headers if provided
+                if context:
+                    default_headers.update(context.to_tracking_headers())
 
-            client_kwargs["default_headers"] = default_headers
+                client_kwargs["default_headers"] = default_headers
 
-            logger.debug("Creating Anthropic client with Helicone proxy")
-        else:
-            logger.debug("Creating Anthropic client (direct)")
+                logger.debug("Creating Anthropic client with Helicone proxy")
+                return Anthropic(**client_kwargs)
+
+        logger.debug("Creating Anthropic client (direct)")
 
         return Anthropic(**client_kwargs)

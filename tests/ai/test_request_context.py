@@ -14,7 +14,7 @@ class TestAIRequestContextHeaders:
             mock_settings.ENVIRONMENT = "production"
 
             context = AIRequestContext()
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             assert headers == {"Helicone-Property-Environment": "production"}
 
@@ -24,7 +24,7 @@ class TestAIRequestContextHeaders:
             mock_settings.ENVIRONMENT = "development"
 
             context = AIRequestContext(user_id="user_123")
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             assert headers["Helicone-User-Id"] == "user_123"
 
@@ -34,7 +34,7 @@ class TestAIRequestContextHeaders:
             mock_settings.ENVIRONMENT = "development"
 
             context = AIRequestContext(session_id="sess_abc123")
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             assert headers["Helicone-Session-Id"] == "sess_abc123"
 
@@ -44,7 +44,7 @@ class TestAIRequestContextHeaders:
             mock_settings.ENVIRONMENT = "development"
 
             context = AIRequestContext(feature_name="workout_parser")
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             assert headers["Helicone-Property-Feature"] == "workout_parser"
 
@@ -54,7 +54,7 @@ class TestAIRequestContextHeaders:
             mock_settings.ENVIRONMENT = "development"
 
             context = AIRequestContext(request_id="req_xyz789")
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             assert headers["Helicone-Request-Id"] == "req_xyz789"
 
@@ -69,7 +69,7 @@ class TestAIRequestContextHeaders:
                     "source_platform": "youtube",
                 }
             )
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             assert headers["Helicone-Property-Workout-Type"] == "strength"
             assert headers["Helicone-Property-Source-Platform"] == "youtube"
@@ -86,7 +86,7 @@ class TestAIRequestContextHeaders:
                 request_id="req_001",
                 custom_properties={"model": "gpt-4o"},
             )
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             expected = {
                 "Helicone-User-Id": "user_456",
@@ -108,7 +108,7 @@ class TestAIRequestContextHeaders:
                 session_id=None,
                 feature_name="test",
             )
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             assert "Helicone-User-Id" not in headers
             assert "Helicone-Session-Id" not in headers
@@ -122,7 +122,7 @@ class TestAIRequestContextHeaders:
             # Note: Current implementation includes empty strings
             # This test documents the behavior - may want to change
             context = AIRequestContext(user_id="")
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             # Empty string is falsy, so should NOT be included
             assert "Helicone-User-Id" not in headers
@@ -133,7 +133,7 @@ class TestAIRequestContextHeaders:
             mock_settings.ENVIRONMENT = "production"
 
             context = AIRequestContext()  # Empty context
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             assert "Helicone-Property-Environment" in headers
             assert headers["Helicone-Property-Environment"] == "production"
@@ -146,7 +146,7 @@ class TestAIRequestContextHeaders:
             context = AIRequestContext(
                 custom_properties={"my_custom_property": "value"}
             )
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             # workout_type -> Workout-Type (title case with hyphens)
             assert "Helicone-Property-My-Custom-Property" in headers
@@ -162,7 +162,7 @@ class TestAIRequestContextHeaders:
                     "enabled": True,
                 }
             )
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             assert headers["Helicone-Property-Count"] == "42"
             assert headers["Helicone-Property-Enabled"] == "True"

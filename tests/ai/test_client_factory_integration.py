@@ -41,7 +41,7 @@ class TestOpenAIClientCreation:
 
             from workout_ingestor_api.ai.client_factory import (
                 AIClientFactory,
-                HELICONE_OPENAI_BASE_URL,
+                _HELICONE_OPENAI_BASE_URL,
             )
 
             mock_openai_class = MagicMock()
@@ -49,7 +49,7 @@ class TestOpenAIClientCreation:
                 client = AIClientFactory.create_openai_client()
 
                 call_kwargs = mock_openai_class.call_args[1]
-                assert call_kwargs["base_url"] == HELICONE_OPENAI_BASE_URL
+                assert call_kwargs["base_url"] == _HELICONE_OPENAI_BASE_URL
                 assert "Helicone-Auth" in call_kwargs["default_headers"]
                 assert (
                     call_kwargs["default_headers"]["Helicone-Auth"]
@@ -172,7 +172,7 @@ class TestAnthropicClientCreation:
 
             from workout_ingestor_api.ai.client_factory import (
                 AIClientFactory,
-                HELICONE_ANTHROPIC_BASE_URL,
+                _HELICONE_ANTHROPIC_BASE_URL,
             )
 
             mock_anthropic_class = MagicMock()
@@ -180,7 +180,7 @@ class TestAnthropicClientCreation:
                 client = AIClientFactory.create_anthropic_client()
 
                 call_kwargs = mock_anthropic_class.call_args[1]
-                assert call_kwargs["base_url"] == HELICONE_ANTHROPIC_BASE_URL
+                assert call_kwargs["base_url"] == _HELICONE_ANTHROPIC_BASE_URL
                 assert "Helicone-Auth" in call_kwargs["default_headers"]
 
     def test_raises_value_error_without_anthropic_api_key(self):
@@ -240,7 +240,7 @@ class TestHeliconeHeaderCompliance:
             from workout_ingestor_api.ai.client_factory import AIRequestContext
 
             context = AIRequestContext(custom_properties={"my_prop": "value"})
-            headers = context.to_helicone_headers()
+            headers = context.to_tracking_headers()
 
             # Should be Helicone-Property-My-Prop (title case with hyphens)
             property_headers = [k for k in headers.keys() if k.startswith("Helicone-Property-")]
@@ -249,12 +249,12 @@ class TestHeliconeHeaderCompliance:
     def test_helicone_base_urls_are_correct(self):
         """Verify Helicone proxy base URLs are correctly defined."""
         from workout_ingestor_api.ai.client_factory import (
-            HELICONE_OPENAI_BASE_URL,
-            HELICONE_ANTHROPIC_BASE_URL,
+            _HELICONE_OPENAI_BASE_URL,
+            _HELICONE_ANTHROPIC_BASE_URL,
         )
 
-        assert HELICONE_OPENAI_BASE_URL == "https://oai.helicone.ai/v1"
-        assert HELICONE_ANTHROPIC_BASE_URL == "https://anthropic.helicone.ai"
+        assert _HELICONE_OPENAI_BASE_URL == "https://oai.helicone.ai/v1"
+        assert _HELICONE_ANTHROPIC_BASE_URL == "https://anthropic.helicone.ai"
 
 
 class TestHeliconeRequiresApiKey:

@@ -61,6 +61,18 @@ def is_retryable_error(exception: BaseException) -> bool:
     if "connection" in error_str or "connect" in exception_type:
         return True
 
+    # Check for DNS resolution failures - retry (transient network issue)
+    if "name or service not known" in error_str:
+        return True
+    if "nodename nor servname provided" in error_str:
+        return True
+    if "getaddrinfo failed" in error_str:
+        return True
+    if "dns" in error_str and ("failed" in error_str or "error" in error_str):
+        return True
+    if "temporary failure in name resolution" in error_str:
+        return True
+
     # Check for non-retryable errors
     if any(code in error_str for code in ["400", "401", "403", "404"]):
         return False
