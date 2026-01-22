@@ -27,6 +27,13 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v
         env:
+          # API Keys (test values - not real keys)
           OPENAI_API_KEY: test-key
+          ANTHROPIC_API_KEY: test-key
           SUPABASE_URL: https://test.supabase.co
           SUPABASE_SERVICE_ROLE_KEY: test-key
+          # Helicone AI Gateway (disabled for CI tests)
+          HELICONE_ENABLED: "false"
+          HELICONE_API_KEY: ""
+          # Environment
+          ENVIRONMENT: development
