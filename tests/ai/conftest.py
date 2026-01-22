@@ -1,7 +1,61 @@
 """Shared fixtures for AI module tests."""
-import pytest
-from unittest.mock import patch, MagicMock
 import os
+import subprocess
+import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+
+# =============================================================================
+# Environment Isolation Fixtures (fixes module reloading anti-pattern)
+# =============================================================================
+
+
+@pytest.fixture
+def isolated_env_runner():
+    """
+    Run code in isolated subprocess with custom environment.
+
+    This avoids the module reloading anti-pattern by running each test
+    in a fresh Python interpreter with the desired environment variables.
+    """
+
+    def run_with_env(code: str, env_overrides: dict) -> subprocess.CompletedProcess:
+        env = {**os.environ, **env_overrides}
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return result
+
+    return run_with_env
+
+
+@pytest.fixture
+def helicone_enabled_env():
+    """Environment variables for Helicone-enabled tests."""
+    return {
+        "HELICONE_ENABLED": "true",
+        "ENVIRONMENT": "test",
+    }
+
+
+@pytest.fixture
+def helicone_disabled_env():
+    """Environment variables for Helicone-disabled tests."""
+    return {
+        "HELICONE_ENABLED": "false",
+        "ENVIRONMENT": "test",
+    }
+
+
+# =============================================================================
+# Mock Settings Fixtures
+# =============================================================================
 
 
 @pytest.fixture
@@ -83,3 +137,17 @@ def auth_error():
 def bad_request_error():
     """Simulate bad request error."""
     return Exception("Error code: 400 - Invalid request: missing 'messages' field")
+
+
+# =============================================================================
+# E2E Test Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def real_anthropic_key():
+    """Verify real Anthropic API key is available for E2E tests."""
+    key = os.getenv("ANTHROPIC_API_KEY")
+    if not key or key.startswith("test"):
+        pytest.skip("Real ANTHROPIC_API_KEY required for Anthropic E2E tests")
+    return key
