@@ -38,18 +38,19 @@ class TextParser(BaseParser):
         r'^[\s-]*'  # Optional leading whitespace or dash
         r'([A-Za-z][A-Za-z\s\(\)\-]+?)'  # Exercise name (with hyphens for compound names like "Pull-ups")
         r'[\s:–-]+'  # Separator
-        r'(\d+)\s*[xX×]\s*(\d+(?:[+x]\d+)?)'  # Sets x Reps
+        r'(\d+)\s*[xX×]\s*(\d+(?:[-–]\d+)?(?:[+x]\d+)?)'  # Sets x Reps (with optional range like 8-12)
+        r'(?:\s*[@at]*\s*RPE\s*(\d+(?:\.\d+)?))?'  # Optional RPE (e.g., @RPE8)
         r'(?:\s*[@at]*\s*(\d+(?:\.\d+)?)\s*(kg|lbs?|%)?)?'  # Optional weight
-        r'(?:\s*RPE\s*(\d+(?:\.\d+)?))?'  # Optional RPE
         r'(?:\s*[-–]\s*(.+))?$',  # Optional notes
         re.IGNORECASE
     )
 
     # Simpler pattern for "Exercise: SetsxReps" format
     # Also captures optional unit (s, m, sec, seconds, meters) for time/distance
+    # And rep ranges like "8-12"
     SIMPLE_EXERCISE_PATTERN = re.compile(
         r'^([A-Za-z][A-Za-z\s\-]+?)'  # Exercise name (with hyphens for compound names)
-        r'[\s:]+(\d+)\s*[xX×]\s*(\d+(?:\.?\d+)?)'  # Sets x Reps (can be float like 10.5)
+        r'[\s:]+(\d+)\s*[xX×]\s*(\d+(?:[-–]\d+)?(?:\.?\d+)?)'  # Sets x Reps (with optional range like 8-12)
         r'(?:\s*([a-zA-Z]+)?)?',  # Optional unit (s, sec, m, etc.)
         re.IGNORECASE
     )
@@ -253,9 +254,9 @@ class TextParser(BaseParser):
             name = match.group(1).strip()
             sets = int(match.group(2))
             reps = match.group(3)
-            weight = match.group(4)
-            weight_unit = match.group(5)
-            rpe = match.group(6)
+            rpe = match.group(4)  # Moved earlier in pattern
+            weight = match.group(5)
+            weight_unit = match.group(6)
             notes = match.group(7)
 
             reps_str, reps_flags = self.parse_reps(reps)
