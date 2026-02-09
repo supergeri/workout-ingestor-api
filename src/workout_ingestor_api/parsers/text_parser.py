@@ -26,6 +26,9 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+# Compiled pattern for superset splitting (avoids recompilation per call)
+_HAS_SETS_REPS = re.compile(r'\d+\s*[xX×]\s*\d+')
+
 # Workout ingestor API URL (for LLM processing)
 INGESTOR_API_URL = "http://workout-ingestor:8004"
 
@@ -36,19 +39,22 @@ class TextParser(BaseParser):
     # Patterns for structured text parsing
     EXERCISE_LINE_PATTERN = re.compile(
         r'^[\s-]*'  # Optional leading whitespace or dash
-        r'([A-Za-z][A-Za-z\s\(\)]+?)'  # Exercise name
+        r'([A-Za-z][A-Za-z\s\(\)\-]+?)'  # Exercise name (with hyphens for compound names like "Pull-ups")
         r'[\s:–-]+'  # Separator
-        r'(\d+)\s*[xX×]\s*(\d+(?:[+x]\d+)?)'  # Sets x Reps
+        r'(\d+)\s*[xX×]\s*(\d+(?:[-–]\d+)?(?:[+x]\d+)?)'  # Sets x Reps (with optional range like 8-12)
+        r'(?:\s*[@at]*\s*RPE\s*(\d+(?:\.\d+)?))?'  # Optional RPE (e.g., @RPE8)
         r'(?:\s*[@at]*\s*(\d+(?:\.\d+)?)\s*(kg|lbs?|%)?)?'  # Optional weight
-        r'(?:\s*RPE\s*(\d+(?:\.\d+)?))?'  # Optional RPE
         r'(?:\s*[-–]\s*(.+))?$',  # Optional notes
         re.IGNORECASE
     )
 
     # Simpler pattern for "Exercise: SetsxReps" format
+    # Also captures optional unit (s, m, sec, seconds, meters) for time/distance
+    # And rep ranges like "8-12"
     SIMPLE_EXERCISE_PATTERN = re.compile(
-        r'^([A-Za-z][A-Za-z\s]+?)'  # Exercise name
-        r'[\s:]+(\d+)\s*[xX×]\s*(\d+)',  # Sets x Reps
+        r'^([A-Za-z][A-Za-z\s\-]+?)'  # Exercise name (with hyphens for compound names)
+        r'[\s:]+(\d+)\s*[xX×]\s*(\d+(?:[-–]\d+)?(?:\.?\d+)?)'  # Sets x Reps (with optional range like 8-12)
+        r'(?:\s*([a-zA-Z]+)?)?',  # Optional unit (s, sec, m, etc.)
         re.IGNORECASE
     )
 
@@ -69,7 +75,7 @@ class TextParser(BaseParser):
             text = self._decode_content(content)
 
             # First, try structured parsing
-            result = await self._try_structured_parse(text)
+            result = await self.try_structured_parse(text)
 
             if result.workouts and result.confidence >= 60:
                 # Structured parsing worked well
@@ -114,12 +120,14 @@ class TextParser(BaseParser):
 
         return content.decode('utf-8', errors='replace')
 
-    async def _try_structured_parse(self, text: str) -> ParseResult:
+    async def try_structured_parse(self, text: str) -> ParseResult:
         """Try to parse text using structured patterns"""
         lines = text.strip().split('\n')
         workouts = []
         current_workout = None
         exercise_order = 1
+        superset_group = None
+        superset_counter = 0
 
         for line in lines:
             line = line.strip()
@@ -139,20 +147,42 @@ class TextParser(BaseParser):
                     metadata={'raw_header': line}
                 )
                 exercise_order = 1
+                superset_group = None
                 continue
 
-            # Try to parse as exercise line
-            exercise = self._parse_exercise_line(line, exercise_order)
+            # Check for Instagram-style superset notation (e.g., "Pull-ups 4x8 + Z Press 4x8")
+            # Split on + only if all parts have set/rep notation
+            parts = self._split_superset_line(line)
+            
+            if len(parts) > 1:
+                # This is a superset - assign group letter
+                superset_counter += 1
+                superset_group = chr(64 + superset_counter)  # A, B, C, ...
+                
+                for part in parts:
+                    exercise = self._parse_exercise_line(part.strip(), exercise_order)
+                    if exercise:
+                        exercise.superset_group = superset_group
+                        if not current_workout:
+                            current_workout = ParsedWorkout(
+                                name="Workout",
+                                metadata={'source': 'text'}
+                            )
+                        current_workout.exercises.append(exercise)
+                        exercise_order += 1
+            else:
+                # Single exercise line
+                exercise = self._parse_exercise_line(line, exercise_order)
 
-            if exercise:
-                if not current_workout:
-                    current_workout = ParsedWorkout(
-                        name="Workout",
-                        metadata={'source': 'text'}
-                    )
+                if exercise:
+                    if not current_workout:
+                        current_workout = ParsedWorkout(
+                            name="Workout",
+                            metadata={'source': 'text'}
+                        )
 
-                current_workout.exercises.append(exercise)
-                exercise_order += 1
+                    current_workout.exercises.append(exercise)
+                    exercise_order += 1
 
         # Add final workout
         if current_workout and current_workout.exercises:
@@ -186,6 +216,35 @@ class TextParser(BaseParser):
 
         return result
 
+    def _split_superset_line(self, line: str) -> List[str]:
+        """
+        Split line on '+' only if all parts have set/rep notation.
+        
+        Examples:
+        - "Pull-ups 4x8 + Z Press 4x8" -> ["Pull-ups 4x8", "Z Press 4x8"]
+        - "Chin-up + Negative Hold" -> ["Chin-up + Negative Hold"] (kept together)
+        
+        Returns list of exercise parts.
+        """
+        # Check if line contains '+' 
+        if '+' not in line:
+            return [line]
+        
+        # Split on '+'
+        parts = re.split(r'\s*\+\s*', line)
+        
+        if len(parts) <= 1:
+            return [line]
+        
+        # Only split if ALL parts have set/rep notation (digit + x + digit)
+        all_have_sets_reps = all(_HAS_SETS_REPS.search(part) for part in parts)
+        
+        if all_have_sets_reps:
+            return [p.strip() for p in parts]
+        
+        # If not all have sets/reps, keep original line unsplit
+        return [line]
+
     def _parse_exercise_line(self, line: str, order: int) -> Optional[ParsedExercise]:
         """Try to parse a single line as an exercise"""
         # Try detailed pattern first
@@ -195,9 +254,9 @@ class TextParser(BaseParser):
             name = match.group(1).strip()
             sets = int(match.group(2))
             reps = match.group(3)
-            weight = match.group(4)
-            weight_unit = match.group(5)
-            rpe = match.group(6)
+            rpe = match.group(4)  # Moved earlier in pattern
+            weight = match.group(5)
+            weight_unit = match.group(6)
             notes = match.group(7)
 
             reps_str, reps_flags = self.parse_reps(reps)
@@ -228,15 +287,22 @@ class TextParser(BaseParser):
             name = simple_match.group(1).strip()
             sets = int(simple_match.group(2))
             reps = simple_match.group(3)
+            unit = simple_match.group(4)  # Optional unit (s, m, sec, etc.)
 
-            reps_str, reps_flags = self.parse_reps(reps)
+            flags: list = []
+            # Handle reps with units (e.g., "30s", "10m")
+            if unit:
+                reps_str = f"{reps}{unit}"
+            else:
+                reps_str, reps_flags = self.parse_reps(reps)
+                flags = reps_flags
 
             return ParsedExercise(
                 raw_name=self.normalize_exercise_name(name),
                 order=str(order),
                 sets=sets,
                 reps=reps_str,
-                flags=reps_flags
+                flags=flags
             )
 
         return None
