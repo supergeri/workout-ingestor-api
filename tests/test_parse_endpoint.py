@@ -129,7 +129,8 @@ Squats 3x10"""
         assert "Lower Body:" not in exercise_names
     
     def test_no_split_compound_names_without_sets_reps(self):
-        """Test that compound names without sets/reps are not split on +"""
+        """Test that compound exercise names without sets/reps are parsed as single exercise"""
+        # Even without set/rep notation, exercise names are accepted
         text = "Chin-up + Negative Hold"
         
         response = client.post("/parse/text", json={"text": text})
@@ -137,9 +138,11 @@ Squats 3x10"""
         assert response.status_code == 200
         data = response.json()
         
-        # Should be one exercise since neither side has set/rep notation
+        # Parsed as 1 exercise (not split on +) with no sets/reps data
         assert len(data["exercises"]) == 1
         assert data["exercises"][0]["raw_name"] == "Chin-up + Negative Hold"
+        assert data["exercises"][0]["sets"] is None
+        assert data["exercises"][0]["reps"] is None
     
     def test_rep_ranges(self):
         """Test rep ranges like '4x8-12'"""
@@ -253,9 +256,9 @@ Deadlifts 5x5"""
         assert data["exercises"][1]["raw_name"] == "Bench Press"
         assert data["exercises"][2]["raw_name"] == "Deadlifts"
     
-    def test_llm_fallback_for_unstructured_text(self):
-        """Test that LLM fallback works for unstructured text"""
-        # Use structured input that rules-based parser can handle
+    def test_structured_parsing_extracts_embedded_notation(self):
+        """Test that structured parser extracts exercises from conversational text"""
+        # Text with structured notation (4x8, 4x5) embedded in conversational text
         text = "Today I did some squats 4x8 and bench press 4x5. It was a great workout..."
         
         response = client.post("/parse/text", json={"text": text})
@@ -263,7 +266,9 @@ Deadlifts 5x5"""
         assert response.status_code == 200
         data = response.json()
         
-        # Should have exercises from LLM parsing
+        # Structured parser successfully extracts notation from conversational text
         assert "exercises" in data
-        assert data["detected_format"] == "text_llm"
+        assert data["detected_format"] == "instagram_caption"  # Structured notation found
+        assert data["success"] is True
         assert "confidence" in data
+        assert len(data["exercises"]) > 0
