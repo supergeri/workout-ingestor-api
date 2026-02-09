@@ -36,7 +36,7 @@ class TextParser(BaseParser):
     # Patterns for structured text parsing
     EXERCISE_LINE_PATTERN = re.compile(
         r'^[\s-]*'  # Optional leading whitespace or dash
-        r'([A-Za-z][A-Za-z\s\(\)]+?)'  # Exercise name
+        r'([A-Za-z][A-Za-z\s\(\)\-]+?)'  # Exercise name (with hyphens for compound names like "Pull-ups")
         r'[\s:–-]+'  # Separator
         r'(\d+)\s*[xX×]\s*(\d+(?:[+x]\d+)?)'  # Sets x Reps
         r'(?:\s*[@at]*\s*(\d+(?:\.\d+)?)\s*(kg|lbs?|%)?)?'  # Optional weight
@@ -46,9 +46,11 @@ class TextParser(BaseParser):
     )
 
     # Simpler pattern for "Exercise: SetsxReps" format
+    # Also captures optional unit (s, m, sec, seconds, meters) for time/distance
     SIMPLE_EXERCISE_PATTERN = re.compile(
-        r'^([A-Za-z][A-Za-z\s]+?)'  # Exercise name
-        r'[\s:]+(\d+)\s*[xX×]\s*(\d+)',  # Sets x Reps
+        r'^([A-Za-z][A-Za-z\s\-]+?)'  # Exercise name (with hyphens for compound names)
+        r'[\s:]+(\d+)\s*[xX×]\s*(\d+(?:\.?\d+)?)'  # Sets x Reps (can be float like 10.5)
+        r'(?:\s*([a-zA-Z]+)?)?',  # Optional unit (s, sec, m, etc.)
         re.IGNORECASE
     )
 
@@ -120,6 +122,8 @@ class TextParser(BaseParser):
         workouts = []
         current_workout = None
         exercise_order = 1
+        superset_group = None
+        superset_counter = 0
 
         for line in lines:
             line = line.strip()
@@ -139,20 +143,42 @@ class TextParser(BaseParser):
                     metadata={'raw_header': line}
                 )
                 exercise_order = 1
+                superset_group = None
                 continue
 
-            # Try to parse as exercise line
-            exercise = self._parse_exercise_line(line, exercise_order)
+            # Check for Instagram-style superset notation (e.g., "Pull-ups 4x8 + Z Press 4x8")
+            # Split on + only if all parts have set/rep notation
+            parts = self._split_superset_line(line)
+            
+            if len(parts) > 1:
+                # This is a superset - assign group letter
+                superset_counter += 1
+                superset_group = chr(64 + superset_counter)  # A, B, C, ...
+                
+                for part in parts:
+                    exercise = self._parse_exercise_line(part.strip(), exercise_order)
+                    if exercise:
+                        exercise.superset_group = superset_group
+                        if not current_workout:
+                            current_workout = ParsedWorkout(
+                                name="Workout",
+                                metadata={'source': 'text'}
+                            )
+                        current_workout.exercises.append(exercise)
+                        exercise_order += 1
+            else:
+                # Single exercise line
+                exercise = self._parse_exercise_line(line, exercise_order)
 
-            if exercise:
-                if not current_workout:
-                    current_workout = ParsedWorkout(
-                        name="Workout",
-                        metadata={'source': 'text'}
-                    )
+                if exercise:
+                    if not current_workout:
+                        current_workout = ParsedWorkout(
+                            name="Workout",
+                            metadata={'source': 'text'}
+                        )
 
-                current_workout.exercises.append(exercise)
-                exercise_order += 1
+                    current_workout.exercises.append(exercise)
+                    exercise_order += 1
 
         # Add final workout
         if current_workout and current_workout.exercises:
@@ -185,6 +211,38 @@ class TextParser(BaseParser):
         result.patterns = self.detect_patterns(workouts)
 
         return result
+
+    def _split_superset_line(self, line: str) -> List[str]:
+        """
+        Split line on '+' only if all parts have set/rep notation.
+        
+        Examples:
+        - "Pull-ups 4x8 + Z Press 4x8" -> ["Pull-ups 4x8", "Z Press 4x8"]
+        - "Chin-up + Negative Hold" -> ["Chin-up + Negative Hold"] (kept together)
+        
+        Returns list of exercise parts.
+        """
+        # Check if line contains '+' 
+        if '+' not in line:
+            return [line]
+        
+        # Split on '+'
+        parts = re.split(r'\s*\+\s*', line)
+        
+        if len(parts) <= 1:
+            return [line]
+        
+        # Only split if ALL parts have set/rep notation (digit + x + digit)
+        # Pattern: one or more digits, then x/X/×, then one or more digits
+        has_sets_reps_pattern = re.compile(r'\d+\s*[xX×]\s*\d+')
+        
+        all_have_sets_reps = all(has_sets_reps_pattern.search(part) for part in parts)
+        
+        if all_have_sets_reps:
+            return [p.strip() for p in parts]
+        
+        # If not all have sets/reps, keep original line unsplit
+        return [line]
 
     def _parse_exercise_line(self, line: str, order: int) -> Optional[ParsedExercise]:
         """Try to parse a single line as an exercise"""
@@ -228,16 +286,31 @@ class TextParser(BaseParser):
             name = simple_match.group(1).strip()
             sets = int(simple_match.group(2))
             reps = simple_match.group(3)
+            unit = simple_match.group(4)  # Optional unit (s, m, sec, etc.)
 
-            reps_str, reps_flags = self.parse_reps(reps)
+            # Handle reps with units (e.g., "30s", "10m")
+            if unit:
+                reps_str = f"{reps}{unit}"
+            else:
+                reps_str, reps_flags = self.parse_reps(reps)
+                flags = reps_flags
 
-            return ParsedExercise(
-                raw_name=self.normalize_exercise_name(name),
-                order=str(order),
-                sets=sets,
-                reps=reps_str,
-                flags=reps_flags
-            )
+            if not unit:
+                return ParsedExercise(
+                    raw_name=self.normalize_exercise_name(name),
+                    order=str(order),
+                    sets=sets,
+                    reps=reps_str,
+                    flags=flags
+                )
+            else:
+                return ParsedExercise(
+                    raw_name=self.normalize_exercise_name(name),
+                    order=str(order),
+                    sets=sets,
+                    reps=reps_str,
+                    flags=[]
+                )
 
         return None
 

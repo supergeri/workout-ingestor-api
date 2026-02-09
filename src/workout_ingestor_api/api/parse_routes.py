@@ -64,12 +64,11 @@ class ParseTextResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Helper Functions (kept as they may be useful for preprocessing)
+# Helper Functions
 # ---------------------------------------------------------------------------
 
-
 def clean_exercise_name(name: str) -> str:
-    """Clean up exercise name by removing annotations"""
+    """Clean up exercise name by removing special annotations"""
     return (
         name
         .replace('→', '')    # U+2192
@@ -81,7 +80,7 @@ def clean_exercise_name(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Main parsing logic
+# Main Parsing (uses TextParser)
 # ---------------------------------------------------------------------------
 
 def parse_result_to_response(parse_result: ParseResult, source: Optional[str]) -> ParseTextResponse:
@@ -99,7 +98,7 @@ def parse_result_to_response(parse_result: ParseResult, source: Optional[str]) -
             # Clean exercise name by removing special characters
             clean_name = clean_exercise_name(exercise.raw_name)
             
-            # Determine if part of superset (from metadata if available)
+            # Determine if part of superset (from exercise metadata)
             superset_group = exercise.superset_group
             
             # Parse distance from reps if it contains units like 'm'
