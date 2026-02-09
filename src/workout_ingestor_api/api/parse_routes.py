@@ -4,7 +4,7 @@ Parse endpoints for structured text parsing
 Provides POST /parse/text for Instagram caption and general workout text parsing.
 Returns structured exercise data with sets, reps, superset_group, etc.
 
-Uses TextParser.try_structured_parse() as per AMA-555 requirements.
+Uses ParserService.parse_free_text_to_workout() as primary parser, with LLM fallback.
 """
 
 import asyncio
@@ -511,6 +511,144 @@ async def parse_with_llm_fallback(text: str, source: str | None) -> ParseTextRes
         )
 
 
+def _enrich_exercise(name: str, ex) -> list[ParsedExerciseResponse]:
+    """Extract sets/reps/distance/RPE from an exercise name and return one or
+    more ParsedExerciseResponse objects (splitting supersets with '+' when both
+    sides have NxN notation)."""
+
+    # Try superset split first
+    parts = split_superset_intelligently(name)
+    results: list[dict] = []
+    for part in parts:
+        part = part.strip()
+
+        # Try distance pattern (e.g., "Seated sled pull 5 x 10m")
+        dm = DISTANCE_PATTERN.match(part)
+        if dm:
+            results.append({
+                "raw_name": clean_exercise_name(dm.group("name").strip()),
+                "sets": int(dm.group("sets")),
+                "reps": None,
+                "distance": f"{dm.group('distance')}{dm.group('unit')}",
+                "rpe": None,
+            })
+            continue
+
+        # Try sets/reps pattern (e.g., "Squats 4x8", "Squats 4x8-12", "Plank 3x30s")
+        sm = SETS_REPS_PATTERN.match(part)
+        if sm:
+            rpe_match = RPE_PATTERN.search(part)
+            reps_val = sm.group("reps")
+            unit = sm.group("unit")
+            if unit and unit.lower() in ("s", "sec", "seconds"):
+                reps_val = f"{reps_val}{unit}"
+            results.append({
+                "raw_name": clean_exercise_name(sm.group("name").strip()),
+                "sets": int(sm.group("sets")),
+                "reps": reps_val,
+                "distance": None,
+                "rpe": float(rpe_match.group("rpe")) if rpe_match else None,
+            })
+            continue
+
+        # No NxN — use whatever ParserService already extracted
+        results.append({
+            "raw_name": clean_exercise_name(part),
+            "sets": ex.sets,
+            "reps": str(ex.reps) if ex.reps else (ex.reps_range if hasattr(ex, "reps_range") and ex.reps_range else None),
+            "distance": f"{ex.distance_m}m" if ex.distance_m else None,
+            "rpe": None,
+        })
+
+    return results
+
+
+def workout_to_parse_response(
+    workout,
+    source: str | None,
+    detected_format: str = "structured",
+    confidence: int = 80,
+) -> ParseTextResponse:
+    """Convert ParserService Workout to ParseTextResponse.
+
+    Iterates both block.exercises and legacy block.supersets to collect all
+    exercises.  For each exercise, ``_enrich_exercise`` extracts sets/reps/
+    distance from the raw name (which ParserService leaves as the full line)
+    and splits ``+`` supersets when both sides have NxN notation.
+    """
+
+    exercises: list[ParsedExerciseResponse] = []
+    order = 0
+    superset_counter = 0
+
+    def _process_exercises(ex_list, superset_group):
+        nonlocal order, superset_counter
+        for ex in ex_list:
+            enriched = _enrich_exercise(ex.name, ex)
+            is_inline_superset = len(enriched) > 1
+
+            if is_inline_superset and superset_group is None:
+                # Inline superset discovered (e.g., "Pull-ups 4x8 + Z Press 4x8")
+                # but exercise was not already in a superset group.
+                superset_counter += 1
+                ss_group = chr(64 + min(superset_counter, 26))
+            elif superset_group is not None:
+                # Exercise already belongs to a superset from block/legacy
+                ss_group = superset_group
+            else:
+                ss_group = None
+
+            for item in enriched:
+                exercises.append(ParsedExerciseResponse(
+                    raw_name=item["raw_name"],
+                    sets=item["sets"],
+                    reps=item["reps"],
+                    distance=item["distance"],
+                    rpe=item["rpe"],
+                    superset_group=ss_group,
+                    order=order,
+                    notes=getattr(ex, "notes", None),
+                ))
+                order += 1
+
+    for block in workout.blocks:
+        is_superset = (
+            block.structure == "superset"
+            or (block.label and "superset" in block.label.lower())
+        )
+
+        superset_group = None
+        if is_superset:
+            superset_counter += 1
+            superset_group = chr(64 + min(superset_counter, 26))
+
+        _process_exercises(block.exercises, superset_group)
+
+        # Legacy supersets (ParserService still uses Superset objects)
+        for ss in getattr(block, "supersets", []):
+            superset_counter += 1
+            ss_group = chr(64 + min(superset_counter, 26))
+            _process_exercises(ss.exercises, ss_group)
+
+    # Confidence: proportion of exercises with structured data
+    if not exercises:
+        calc_confidence = 0
+    else:
+        structured = sum(1 for e in exercises if e.sets is not None)
+        if structured == 0:
+            calc_confidence = MIN_BARE_CONFIDENCE
+        else:
+            calc_confidence = min(MAX_STRUCTURED_CONFIDENCE, max(MIN_BARE_CONFIDENCE, int((structured / len(exercises)) * 100)))
+
+    return ParseTextResponse(
+        success=len(exercises) > 0,
+        exercises=exercises,
+        detected_format=detected_format,
+        confidence=calc_confidence,
+        source=source,
+    )
+
+
 # ---------------------------------------------------------------------------
 # API Endpoint
 # ---------------------------------------------------------------------------
@@ -523,7 +661,8 @@ async def parse_text(
     """
     Parse workout text (e.g., Instagram caption) into structured exercise data.
 
-    Uses TextParser.try_structured_parse() per AMA-555 requirements.
+    Uses ParserService.parse_free_text_to_workout() as the primary parser,
+    with LLM fallback when no exercises are found.
 
     ## Request Body
     - **text**: The text to parse (e.g., "Pull-ups 4x8 + Z Press 4x8")
@@ -537,35 +676,12 @@ async def parse_text(
     - distance: Distance if applicable (e.g., "10m")
     - superset_group: Group ID for supersets (e.g., "A", "B")
     - order: Exercise order (0-indexed)
-
-    ## Example
-    ```json
-    {
-      "text": "Workout: Pull-ups 4x8 + Z Press 4x8\\nSA cable row 4x12\\nSeated sled pull 5 x 10m",
-      "source": "instagram_caption"
-    }
-    ```
-
-    Returns:
-    ```json
-    {
-      "success": true,
-      "exercises": [
-        {"raw_name": "Pull-ups", "sets": 4, "reps": "8", "superset_group": "A", "order": 0},
-        {"raw_name": "Z Press", "sets": 4, "reps": "8", "superset_group": "A", "order": 1},
-        {"raw_name": "SA cable row", "sets": 4, "reps": "12", "order": 2},
-        {"raw_name": "Seated sled pull", "sets": 5, "distance": "10m", "order": 3}
-      ],
-      "confidence": 90
-    }
-    ```
     """
     if not request.text:
         raise HTTPException(status_code=400, detail="Text is required")
 
     text = request.text.strip()
     if not text:
-        # Return response with no exercises for whitespace-only input
         return JSONResponse(ParseTextResponse(
             success=False,
             exercises=[],
@@ -576,11 +692,9 @@ async def parse_text(
 
     source = request.source or "instagram_caption"
 
-    # Preprocess once — used for both structured parsing and LLM skip-check
-    lines, superset_mapping = preprocess_and_split_lines(text)
-
+    # Quick check: if all lines are junk (hashtags/CTAs), bail early
+    lines, _ = preprocess_and_split_lines(text)
     if not lines:
-        # All lines were filtered (e.g., only hashtags/CTAs) — skip everything
         return JSONResponse(ParseTextResponse(
             success=False,
             exercises=[],
@@ -589,14 +703,18 @@ async def parse_text(
             source=source,
         ).model_dump())
 
-    # Try structured parsing first using TextParser
-    result = await parse_with_text_parser(lines, superset_mapping, source)
+    # Primary path: ParserService structured regex parsing
+    try:
+        workout = await asyncio.to_thread(
+            ParserService.parse_free_text_to_workout, text, source
+        )
+        result = workout_to_parse_response(workout, source)
 
-    # If structured parsing found exercises, return them
-    if result.success and result.exercises:
-        return JSONResponse(result.model_dump())
+        if result.success and result.exercises:
+            return JSONResponse(result.model_dump())
+    except Exception as e:
+        logger.warning(f"ParserService structured parsing failed: {e}")
 
-    # Fall back to LLM parsing if no exercises found
+    # Fallback: LLM parsing
     llm_result = await parse_with_llm_fallback(text, source)
-
     return JSONResponse(llm_result.model_dump())
