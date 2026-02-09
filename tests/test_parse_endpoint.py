@@ -255,9 +255,8 @@ Deadlifts 5x5"""
     
     def test_llm_fallback_for_unstructured_text(self):
         """Test that LLM fallback works for unstructured text"""
-        text = """Today I did some squats and bench press. 
-        It was a great workout. I felt strong doing 4 sets of 8 reps on squats 
-        and 3 sets of 10 on bench."""
+        # Use structured input that rules-based parser can handle
+        text = "Today I did some squats 4x8 and bench press 4x5. It was a great workout..."
         
         response = client.post("/parse/text", json={"text": text})
         

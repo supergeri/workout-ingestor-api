@@ -5,6 +5,7 @@ Provides POST /parse/text for Instagram caption and general workout text parsing
 Returns structured exercise data with sets, reps, superset_group, etc.
 """
 
+import asyncio
 import re
 import logging
 from typing import List, Optional, Dict, Any
@@ -105,7 +106,7 @@ SKIP_PATTERNS = [
 
 # Numbered/bullet patterns
 NUMBERED_PATTERN = re.compile(r'^\s*(?:\d+[.):]|\d+\s*[.):])\s*(.+)')
-BULLET_PATTERN = re.compile(r'^[\s•\-→>]+(.+)')
+BULLET_PATTERN = re.compile(r'^\s*[•\-→>]\s*(.+)')
 
 
 def has_sets_reps_notation(text: str) -> bool:
@@ -245,10 +246,9 @@ def clean_exercise_name(name: str) -> str:
     """Clean up exercise name by removing annotations"""
     return (
         name
-        .replace('→', '')
-        .replace('→', '')  # Different arrow types
-        .replace('➜', '')
-        .replace('➡', '')
+        .replace('→', '')    # U+2192
+        .replace('➜', '')    # U+279C
+        .replace('➡', '')    # U+27A1
         .replace('=>', '')
         .strip()
     )
@@ -337,7 +337,9 @@ async def parse_with_llm_fallback(text: str, source: Optional[str]) -> ParseText
     Use LLM parsing as fallback when structured parsing doesn't find exercises.
     """
     try:
-        workout = ParserService.parse_free_text_to_workout(text, source or "text")
+        workout = await asyncio.to_thread(
+            ParserService.parse_free_text_to_workout, text, source or "text"
+        )
         
         exercises = []
         order = 0
@@ -369,7 +371,7 @@ async def parse_with_llm_fallback(text: str, source: Optional[str]) -> ParseText
             exercises=exercises,
             detected_format="text_llm",
             confidence=70,
-            metadata={"model": "gpt-4o-mini"}
+            metadata={"parser": "rules_based_fallback"}
         )
     
     except Exception as e:

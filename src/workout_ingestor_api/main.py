@@ -5,7 +5,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from workout_ingestor_api.api.routes import router
 from workout_ingestor_api.api.bulk_import_routes import router as bulk_import_router
-from workout_ingestor_api.api.test_routes import router as test_router
 from workout_ingestor_api.api.parse_routes import router as parse_router
 
 # Initialize Sentry for error tracking (AMA-225)
@@ -32,6 +31,5 @@ app.add_middleware(
 
 app.include_router(router)
 app.include_router(bulk_import_router)
-app.include_router(test_router)
 app.include_router(parse_router)
 
