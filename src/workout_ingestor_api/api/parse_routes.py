@@ -17,12 +17,7 @@ from fastapi.responses import JSONResponse
 
 from workout_ingestor_api.auth import get_current_user
 
-from workout_ingestor_api.parsers.models import (
-    ParseResult,
-    ParsedWorkout,
-    ParsedExercise,
-)
-from workout_ingestor_api.parsers.text_parser import TextParser
+from workout_ingestor_api.models import Exercise, Workout
 from workout_ingestor_api.services.parser_service import ParserService
 
 logger = logging.getLogger(__name__)
@@ -98,7 +93,7 @@ SKIP_PATTERNS = [
 NUMBERED_PATTERN = re.compile(r'^\s*(?:\d+[.):]|\d+\s*[.):])\s*(.+)')
 BULLET_PATTERN = re.compile(r'^\s*[•\-→>]\s*(.+)')
 
-# Compiled once at module level (shared pattern with text_parser._HAS_SETS_REPS)
+# Compiled once at module level
 _HAS_SETS_REPS = re.compile(r'\d+\s*[xX×]\s*\d+')
 
 # Pattern to detect set/rep notation with named groups
@@ -118,9 +113,6 @@ RPE_PATTERN = re.compile(
     r'@\s*RPE?\s*(?P<rpe>\d+(?:\.\d+)?)',
     re.IGNORECASE
 )
-
-# Detect distance values in reps strings (e.g., "10m", "100meters")
-_DISTANCE_REPS_PATTERN = re.compile(r'^\d+(?:m|meters?|yards?|yd)$', re.IGNORECASE)
 
 # Superset split pattern
 _SUPERSET_SPLIT = re.compile(r'\s*\+\s*')
@@ -253,207 +245,6 @@ def preprocess_and_split_lines(text: str) -> tuple[list[str], dict[int, str]]:
     return processed_lines, superset_mapping
 
 
-def parse_line_with_original_patterns(
-    line: str,
-    order: int,
-    superset_group: str | None = None,
-) -> ParsedExerciseResponse | None:
-    """
-    Parse a single line using the original patterns from parse_instagram_caption.
-    Used as a fallback when TextParser doesn't find exercises.
-
-    Returns a ParsedExerciseResponse for lines with set/rep or distance notation,
-    or a bare exercise (sets=None, reps=None) for short text that may be an
-    exercise name (e.g., compound names like "Chin-up + Negative Hold").
-    Returns None only for very short lines (<=2 chars).
-    """
-    line = line.strip()
-    if not line or len(line) <= 2:
-        return None
-
-    # Try distance pattern first (e.g., "5 x 10m")
-    distance_match = DISTANCE_PATTERN.match(line)
-    if distance_match:
-        name = distance_match.group('name').strip()
-        sets = int(distance_match.group('sets'))
-        distance_val = distance_match.group('distance')
-        unit = distance_match.group('unit')
-
-        # Extract RPE if present
-        rpe_match = RPE_PATTERN.search(line)
-        rpe = float(rpe_match.group('rpe')) if rpe_match else None
-
-        return ParsedExerciseResponse(
-            raw_name=clean_exercise_name(name),
-            sets=sets,
-            reps=None,
-            distance=f"{distance_val}{unit}",
-            superset_group=superset_group,
-            order=order,
-            rpe=rpe,
-        )
-
-    # Try sets/reps pattern
-    sets_reps_match = SETS_REPS_PATTERN.match(line)
-    if sets_reps_match:
-        name = sets_reps_match.group('name').strip()
-        sets = int(sets_reps_match.group('sets'))
-        reps = sets_reps_match.group('reps')
-        unit = sets_reps_match.group('unit')
-
-        # Extract RPE if present
-        rpe_match = RPE_PATTERN.search(line)
-        rpe = float(rpe_match.group('rpe')) if rpe_match else None
-
-        # Handle time-based exercises (e.g., "30s", "60sec")
-        if unit and unit.lower() in ('s', 'sec', 'seconds'):
-            return ParsedExerciseResponse(
-                raw_name=clean_exercise_name(name),
-                sets=sets,
-                reps=f"{reps}{unit}",
-                distance=None,
-                superset_group=superset_group,
-                order=order,
-                rpe=rpe,
-            )
-
-        return ParsedExerciseResponse(
-            raw_name=clean_exercise_name(name),
-            sets=sets,
-            reps=reps,
-            distance=None,
-            superset_group=superset_group,
-            order=order,
-            rpe=rpe,
-        )
-
-    # No set/rep or distance notation - return as bare exercise.
-    # This handles compound names like "Chin-up + Negative Hold" that don't
-    # have structured data but are still valid exercise references.
-    return ParsedExerciseResponse(
-        raw_name=clean_exercise_name(line),
-        sets=None,
-        reps=None,
-        distance=None,
-        superset_group=superset_group,
-        order=order,
-    )
-
-
-# ---------------------------------------------------------------------------
-# TextParser integration
-# ---------------------------------------------------------------------------
-
-def parse_result_to_response(
-    parse_result: ParseResult,
-    source: str | None = None,
-    superset_mapping: dict[int, str] | None = None,
-    preprocessed_lines: list[str] | None = None,
-) -> ParseTextResponse:
-    """
-    Convert TextParser's ParseResult to ParseTextResponse format (AMA-555).
-
-    Maps ParsedExercise to ParsedExerciseResponse, preserving all fields.
-    If TextParser finds exercises, use them. Otherwise, fallback to manual parsing
-    of preprocessed_lines with the superset_mapping.
-
-    Distance is detected from the exercise's reps field (e.g., reps="10m" becomes
-    distance="10m"), avoiding fragile cross-referencing with original line indices.
-    """
-    exercises: list[ParsedExerciseResponse] = []
-    order = 0
-
-    # First, try to use TextParser results
-    if parse_result.workouts:
-        for workout in parse_result.workouts:
-            for ex in workout.exercises:
-                # Get superset group from mapping (if available)
-                superset_group = ex.superset_group
-                if superset_mapping and order in superset_mapping:
-                    superset_group = superset_mapping[order]
-
-                # Detect distance from reps (e.g., "10m" -> distance="10m", reps=None)
-                distance = None
-                reps = ex.reps
-                if reps and _DISTANCE_REPS_PATTERN.match(reps):
-                    distance = reps
-                    reps = None
-
-                exercise_response = ParsedExerciseResponse(
-                    raw_name=clean_exercise_name(ex.raw_name),
-                    sets=ex.sets,
-                    reps=reps if reps else None,
-                    distance=distance,
-                    superset_group=superset_group,
-                    order=order,
-                    weight=ex.weight,
-                    weight_unit=ex.weight_unit,
-                    rpe=ex.rpe,
-                    notes=ex.notes,
-                    rest_seconds=ex.rest_seconds,
-                )
-                exercises.append(exercise_response)
-                order += 1
-
-    # If TextParser found nothing, fall back to manual parsing of preprocessed lines
-    if not exercises and preprocessed_lines:
-        for i, line in enumerate(preprocessed_lines):
-            superset_group = superset_mapping.get(i) if superset_mapping else None
-            exercise = parse_line_with_original_patterns(line, i, superset_group)
-            if exercise:
-                exercises.append(exercise)
-
-    # Calculate confidence based on structured data
-    if not exercises:
-        confidence = 0
-    else:
-        structured_count = sum(1 for e in exercises if e.sets is not None)
-        if structured_count == 0:
-            confidence = MIN_BARE_CONFIDENCE
-        else:
-            confidence = min(MAX_STRUCTURED_CONFIDENCE, max(MIN_BARE_CONFIDENCE, int((structured_count / len(exercises)) * 100)))
-
-    # Determine detected format
-    detected_format = parse_result.detected_format
-    if detected_format == "text_structured":
-        detected_format = "instagram_caption"
-
-    return ParseTextResponse(
-        success=len(exercises) > 0,
-        exercises=exercises,
-        detected_format=detected_format or "instagram_caption",
-        confidence=confidence,
-        source=source,
-        metadata=parse_result.metadata,
-    )
-
-
-async def parse_with_text_parser(
-    lines: list[str],
-    superset_mapping: dict[int, str],
-    source: str | None,
-) -> ParseTextResponse:
-    """
-    Parse preprocessed lines using TextParser.try_structured_parse() as per AMA-555.
-
-    Accepts already-preprocessed lines and superset_mapping from
-    preprocess_and_split_lines() to avoid redundant preprocessing.
-    """
-    # Create TextParser instance
-    parser = TextParser()
-
-    # Call try_structured_parse with the preprocessed text
-    processed_text = '\n'.join(lines)
-    try:
-        result = await parser.try_structured_parse(processed_text)
-    except Exception as e:
-        logger.warning(f"TextParser.try_structured_parse failed: {e}")
-        result = ParseResult(success=False)
-
-    # Convert to response format
-    return parse_result_to_response(result, source, superset_mapping, lines)
-
-
 async def parse_with_llm_fallback(text: str, source: str | None) -> ParseTextResponse:
     """
     Use LLM parsing as fallback when structured parsing doesn't find exercises.
@@ -468,9 +259,8 @@ async def parse_with_llm_fallback(text: str, source: str | None) -> ParseTextRes
         superset_counter = 0
 
         for block in workout.blocks:
-            block_label = block.label
             # Check if block label indicates superset
-            is_superset = block.structure == "superset" or "superset" in block_label.lower()
+            is_superset = block.structure == "superset" or (block.label and "superset" in block.label.lower())
 
             superset_group = None
             if is_superset and block.exercises:
@@ -511,7 +301,7 @@ async def parse_with_llm_fallback(text: str, source: str | None) -> ParseTextRes
         )
 
 
-def _enrich_exercise(name: str, ex) -> list[ParsedExerciseResponse]:
+def _enrich_exercise(name: str, ex: Exercise) -> list[ParsedExerciseResponse]:
     """Extract sets/reps/distance/RPE from an exercise name and return one or
     more ParsedExerciseResponse objects (splitting supersets with '+' when both
     sides have NxN notation)."""
@@ -555,7 +345,7 @@ def _enrich_exercise(name: str, ex) -> list[ParsedExerciseResponse]:
         results.append({
             "raw_name": clean_exercise_name(part),
             "sets": ex.sets,
-            "reps": str(ex.reps) if ex.reps else (ex.reps_range if hasattr(ex, "reps_range") and ex.reps_range else None),
+            "reps": str(ex.reps) if ex.reps else (ex.reps_range if ex.reps_range else None),
             "distance": f"{ex.distance_m}m" if ex.distance_m else None,
             "rpe": None,
         })
@@ -564,10 +354,9 @@ def _enrich_exercise(name: str, ex) -> list[ParsedExerciseResponse]:
 
 
 def workout_to_parse_response(
-    workout,
+    workout: Workout,
     source: str | None,
     detected_format: str = "structured",
-    confidence: int = 80,
 ) -> ParseTextResponse:
     """Convert ParserService Workout to ParseTextResponse.
 
