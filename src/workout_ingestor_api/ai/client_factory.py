@@ -1,7 +1,7 @@
 """AI client factory with Helicone integration support."""
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Optional, Dict
+from typing import Any
 
 from workout_ingestor_api.config import settings
 
@@ -20,13 +20,13 @@ DEFAULT_TIMEOUT = 60.0
 class AIRequestContext:
     """Context for AI requests, used for tracking and observability."""
 
-    user_id: Optional[str] = None
-    session_id: Optional[str] = None
-    feature_name: Optional[str] = None
-    request_id: Optional[str] = None
-    custom_properties: Dict[str, str] = field(default_factory=dict)
+    user_id: str | None = None
+    session_id: str | None = None
+    feature_name: str | None = None
+    request_id: str | None = None
+    custom_properties: dict[str, str] = field(default_factory=dict)
 
-    def to_tracking_headers(self) -> Dict[str, str]:
+    def to_tracking_headers(self) -> dict[str, str]:
         """Convert context to provider-specific tracking headers.
 
         Currently generates Helicone headers when Helicone is enabled.
@@ -63,7 +63,7 @@ class AIClientFactory:
 
     @staticmethod
     def create_openai_client(
-        context: Optional[AIRequestContext] = None,
+        context: AIRequestContext | None = None,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> Any:
         """
@@ -90,7 +90,7 @@ class AIClientFactory:
             raise ValueError("OpenAI API key not configured. Set OPENAI_API_KEY environment variable.")
 
         # Build client kwargs
-        client_kwargs: Dict[str, Any] = {
+        client_kwargs: dict[str, Any] = {
             "api_key": api_key,
             "timeout": timeout,
         }
@@ -125,7 +125,7 @@ class AIClientFactory:
 
     @staticmethod
     def create_anthropic_client(
-        context: Optional[AIRequestContext] = None,
+        context: AIRequestContext | None = None,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> Any:
         """
@@ -152,7 +152,7 @@ class AIClientFactory:
             raise ValueError("Anthropic API key not configured. Set ANTHROPIC_API_KEY environment variable.")
 
         # Build client kwargs
-        client_kwargs: Dict[str, Any] = {
+        client_kwargs: dict[str, Any] = {
             "api_key": api_key,
             "timeout": timeout,
         }

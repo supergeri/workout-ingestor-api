@@ -1,6 +1,6 @@
 """Configuration settings for the workout ingestor API."""
 import os
-from typing import Literal, Optional
+from typing import Literal
 
 
 EnvironmentType = Literal["development", "staging", "production"]
@@ -17,9 +17,9 @@ class Settings:
     ENVIRONMENT: EnvironmentType = "development"
 
     # API Keys
-    OPENAI_API_KEY: Optional[str] = None
-    ANTHROPIC_API_KEY: Optional[str] = None
-    HELICONE_API_KEY: Optional[str] = None
+    OPENAI_API_KEY: str | None = None
+    ANTHROPIC_API_KEY: str | None = None
+    HELICONE_API_KEY: str | None = None
 
     def __init__(self):
         # Environment

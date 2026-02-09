@@ -26,6 +26,9 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
+# Compiled pattern for superset splitting (avoids recompilation per call)
+_HAS_SETS_REPS = re.compile(r'\d+\s*[xX×]\s*\d+')
+
 # Workout ingestor API URL (for LLM processing)
 INGESTOR_API_URL = "http://workout-ingestor:8004"
 
@@ -72,7 +75,7 @@ class TextParser(BaseParser):
             text = self._decode_content(content)
 
             # First, try structured parsing
-            result = await self._try_structured_parse(text)
+            result = await self.try_structured_parse(text)
 
             if result.workouts and result.confidence >= 60:
                 # Structured parsing worked well
@@ -117,7 +120,7 @@ class TextParser(BaseParser):
 
         return content.decode('utf-8', errors='replace')
 
-    async def _try_structured_parse(self, text: str) -> ParseResult:
+    async def try_structured_parse(self, text: str) -> ParseResult:
         """Try to parse text using structured patterns"""
         lines = text.strip().split('\n')
         workouts = []
@@ -234,10 +237,7 @@ class TextParser(BaseParser):
             return [line]
         
         # Only split if ALL parts have set/rep notation (digit + x + digit)
-        # Pattern: one or more digits, then x/X/×, then one or more digits
-        has_sets_reps_pattern = re.compile(r'\d+\s*[xX×]\s*\d+')
-        
-        all_have_sets_reps = all(has_sets_reps_pattern.search(part) for part in parts)
+        all_have_sets_reps = all(_HAS_SETS_REPS.search(part) for part in parts)
         
         if all_have_sets_reps:
             return [p.strip() for p in parts]
@@ -289,6 +289,7 @@ class TextParser(BaseParser):
             reps = simple_match.group(3)
             unit = simple_match.group(4)  # Optional unit (s, m, sec, etc.)
 
+            flags: list = []
             # Handle reps with units (e.g., "30s", "10m")
             if unit:
                 reps_str = f"{reps}{unit}"
@@ -296,22 +297,13 @@ class TextParser(BaseParser):
                 reps_str, reps_flags = self.parse_reps(reps)
                 flags = reps_flags
 
-            if not unit:
-                return ParsedExercise(
-                    raw_name=self.normalize_exercise_name(name),
-                    order=str(order),
-                    sets=sets,
-                    reps=reps_str,
-                    flags=flags
-                )
-            else:
-                return ParsedExercise(
-                    raw_name=self.normalize_exercise_name(name),
-                    order=str(order),
-                    sets=sets,
-                    reps=reps_str,
-                    flags=[]
-                )
+            return ParsedExercise(
+                raw_name=self.normalize_exercise_name(name),
+                order=str(order),
+                sets=sets,
+                reps=reps_str,
+                flags=flags
+            )
 
         return None
 
