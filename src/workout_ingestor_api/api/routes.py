@@ -785,8 +785,10 @@ async def ingest_instagram_reel(
     metadata = user_info["metadata"]
 
     # Tier enforcement: free-tier users cannot use Apify extraction
+    # BYPASS_TIER_GATE=true skips this check for dev/staging environments
+    bypass_tier = os.getenv("BYPASS_TIER_GATE", "").lower() == "true"
     subscription = metadata.get("subscription", "free")
-    if subscription == "free":
+    if subscription == "free" and not bypass_tier:
         raise HTTPException(
             status_code=403,
             detail="Instagram auto-extraction requires a Pro or Trainer subscription.",
