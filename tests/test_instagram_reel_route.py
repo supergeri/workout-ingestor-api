@@ -53,3 +53,53 @@ def test_ingest_instagram_reel_missing_url(client):
     """Should return 422 when URL is missing."""
     resp = client.post("/ingest/instagram_reel", json={})
     assert resp.status_code == 422
+
+
+def test_ingest_instagram_reel_service_error(client):
+    """Should return 400 when InstagramReelServiceError is raised."""
+    from workout_ingestor_api.services.instagram_reel_service import InstagramReelServiceError
+
+    with patch(
+        "workout_ingestor_api.services.instagram_reel_cache_service.InstagramReelCacheService.get_cached_workout",
+        return_value=None,
+    ), patch(
+        "workout_ingestor_api.services.instagram_reel_service.InstagramReelService.ingest_reel",
+        side_effect=InstagramReelServiceError("Reel has no transcript or caption"),
+    ):
+        resp = client.post(
+            "/ingest/instagram_reel",
+            json={"url": "https://www.instagram.com/reel/DRHiuniDM1K/"},
+        )
+
+    assert resp.status_code == 400
+    assert "no transcript or caption" in resp.json()["detail"]
+
+
+def test_ingest_instagram_reel_cache_hit(client):
+    """Should return cached workout and increment cache hits."""
+    cached_data = {
+        "workout_data": {
+            "title": "Cached Workout",
+            "blocks": [],
+        },
+        "ingested_at": "2026-01-15T10:00:00Z",
+        "cache_hits": 5,
+    }
+
+    with patch(
+        "workout_ingestor_api.services.instagram_reel_cache_service.InstagramReelCacheService.get_cached_workout",
+        return_value=cached_data,
+    ), patch(
+        "workout_ingestor_api.services.instagram_reel_cache_service.InstagramReelCacheService.increment_cache_hit",
+    ) as mock_increment:
+        resp = client.post(
+            "/ingest/instagram_reel",
+            json={"url": "https://www.instagram.com/reel/DRHiuniDM1K/"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["title"] == "Cached Workout"
+    assert data["_provenance"]["mode"] == "cached"
+    assert data["_provenance"]["cache_hits"] == 6
+    mock_increment.assert_called_once_with("DRHiuniDM1K")

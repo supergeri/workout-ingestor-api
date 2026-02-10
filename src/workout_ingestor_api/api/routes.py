@@ -817,7 +817,7 @@ async def ingest_instagram_reel(
     except Exception as exc:
         logger.error(f"Instagram Reel ingestion failed: {exc}", exc_info=True)
         raise HTTPException(
-            status_code=500, detail=f"Instagram Reel ingestion failed: {exc}"
+            status_code=500, detail="Instagram Reel ingestion failed"
         ) from exc
 
     # Cache the result (non-blocking best-effort)
