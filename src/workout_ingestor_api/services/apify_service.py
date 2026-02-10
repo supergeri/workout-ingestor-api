@@ -47,7 +47,7 @@ class ApifyService:
         client = ApifyClient(token)
 
         run_input = {
-            "directUrls": [url],
+            "username": [url],
             "resultsLimit": 1,
         }
 
