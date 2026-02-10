@@ -139,6 +139,11 @@ class ParseVoiceRequest(BaseModel):
     sport_hint: Optional[str] = None  # "running" | "cycling" | "strength" | "mobility" | "swimming" | "cardio"
 
 
+class InstagramReelRequest(BaseModel):
+    url: str
+    skip_cache: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
@@ -755,6 +760,82 @@ async def ingest_instagram_test(payload: InstagramTestRequest):
     response_payload["_filtered_items"] = filtered_items
 
     return JSONResponse(response_payload)
+
+
+# ---------------------------------------------------------------------------
+# Ingest: Instagram Reels via Apify (AMA-564)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/ingest/instagram_reel")
+async def ingest_instagram_reel(
+    payload: InstagramReelRequest,
+    user_id: Optional[str] = Depends(get_optional_user),
+):
+    """Ingest an Instagram Reel via Apify transcript extraction + LLM parsing."""
+    from workout_ingestor_api.services.instagram_reel_service import (
+        InstagramReelService,
+        InstagramReelServiceError,
+    )
+    from workout_ingestor_api.services.instagram_reel_cache_service import (
+        InstagramReelCacheService,
+    )
+
+    url = payload.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required")
+
+    # Validate it's an Instagram URL
+    if "instagram.com" not in url:
+        raise HTTPException(
+            status_code=400,
+            detail="URL must be an Instagram Reel URL (instagram.com/reel/...)",
+        )
+
+    shortcode = InstagramReelService._extract_shortcode(url)
+
+    # Check cache first
+    if not payload.skip_cache and shortcode:
+        cached = InstagramReelCacheService.get_cached_workout(shortcode)
+        if cached:
+            InstagramReelCacheService.increment_cache_hit(shortcode)
+            workout_data = cached.get("workout_data", {})
+            workout_data.setdefault("_provenance", {})
+            workout_data["_provenance"].update({
+                "mode": "cached",
+                "source_url": url,
+                "shortcode": shortcode,
+                "cached_at": cached.get("ingested_at"),
+                "cache_hits": (cached.get("cache_hits", 0) or 0) + 1,
+            })
+            return JSONResponse(workout_data)
+
+    try:
+        result = InstagramReelService.ingest_reel(url=url, user_id=user_id)
+    except InstagramReelServiceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error(f"Instagram Reel ingestion failed: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Instagram Reel ingestion failed: {exc}"
+        ) from exc
+
+    # Cache the result (non-blocking best-effort)
+    if shortcode:
+        try:
+            cache_data = {k: v for k, v in result.items() if not k.startswith("_")}
+            InstagramReelCacheService.save_workout(
+                shortcode=shortcode,
+                source_url=url,
+                workout_data=cache_data,
+                reel_metadata=result.get("_provenance", {}),
+                processing_method=result.get("_provenance", {}).get("extraction_method", "apify"),
+                user_id=user_id,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to cache reel workout: {e}")
+
+    return JSONResponse(result)
 
 
 # ---------------------------------------------------------------------------
