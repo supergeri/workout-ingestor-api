@@ -26,7 +26,7 @@ from fastapi import (
     Depends,
 )
 from fastapi.responses import JSONResponse, Response
-from workout_ingestor_api.auth import get_current_user, get_optional_user
+from workout_ingestor_api.auth import get_current_user, get_optional_user, get_user_with_metadata
 from pydantic import BaseModel
 
 from workout_ingestor_api.models import Workout, Block, Exercise
@@ -770,7 +770,7 @@ async def ingest_instagram_test(payload: InstagramTestRequest):
 @router.post("/ingest/instagram_reel")
 async def ingest_instagram_reel(
     payload: InstagramReelRequest,
-    user_id: Optional[str] = Depends(get_optional_user),
+    user_info: dict = Depends(get_user_with_metadata),
 ):
     """Ingest an Instagram Reel via Apify transcript extraction + LLM parsing."""
     from workout_ingestor_api.services.instagram_reel_service import (
@@ -780,6 +780,17 @@ async def ingest_instagram_reel(
     from workout_ingestor_api.services.instagram_reel_cache_service import (
         InstagramReelCacheService,
     )
+
+    user_id = user_info["user_id"]
+    metadata = user_info["metadata"]
+
+    # Tier enforcement: free-tier users cannot use Apify extraction
+    subscription = metadata.get("subscription", "free")
+    if subscription == "free":
+        raise HTTPException(
+            status_code=403,
+            detail="Instagram auto-extraction requires a Pro or Trainer subscription.",
+        )
 
     url = payload.url.strip()
     if not url:

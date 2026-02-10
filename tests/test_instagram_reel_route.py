@@ -2,6 +2,10 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
+from main import app
+from workout_ingestor_api.auth import get_user_with_metadata
+from fastapi.testclient import TestClient
+
 
 MOCK_WORKOUT_RESPONSE = {
     "title": "HIIT Workout",
@@ -103,3 +107,42 @@ def test_ingest_instagram_reel_cache_hit(client):
     assert data["_provenance"]["mode"] == "cached"
     assert data["_provenance"]["cache_hits"] == 6
     mock_increment.assert_called_once_with("DRHiuniDM1K")
+
+
+def test_ingest_instagram_reel_free_tier_rejected():
+    """Free-tier users should get 403 when calling Apify extraction."""
+
+    async def mock_free_user() -> dict:
+        return {"user_id": "free-user-456", "metadata": {"subscription": "free"}}
+
+    app.dependency_overrides[get_user_with_metadata] = mock_free_user
+    free_client = TestClient(app)
+
+    resp = free_client.post(
+        "/ingest/instagram_reel",
+        json={"url": "https://www.instagram.com/reel/DRHiuniDM1K/"},
+    )
+
+    assert resp.status_code == 403
+    assert "Pro or Trainer subscription" in resp.json()["detail"]
+
+
+def test_ingest_instagram_reel_pro_tier_allowed(client):
+    """Pro-tier users should be allowed to use Apify extraction."""
+    with patch(
+        "workout_ingestor_api.services.instagram_reel_service.InstagramReelService.ingest_reel",
+        return_value=MOCK_WORKOUT_RESPONSE,
+    ), patch(
+        "workout_ingestor_api.services.instagram_reel_cache_service.InstagramReelCacheService.get_cached_workout",
+        return_value=None,
+    ), patch(
+        "workout_ingestor_api.services.instagram_reel_cache_service.InstagramReelCacheService.save_workout",
+        return_value=True,
+    ):
+        resp = client.post(
+            "/ingest/instagram_reel",
+            json={"url": "https://www.instagram.com/reel/DRHiuniDM1K/"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "HIIT Workout"
