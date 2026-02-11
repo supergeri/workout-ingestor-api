@@ -109,8 +109,10 @@ def test_ingest_instagram_reel_cache_hit(client):
     mock_increment.assert_called_once_with("DRHiuniDM1K")
 
 
-def test_ingest_instagram_reel_free_tier_rejected():
+def test_ingest_instagram_reel_free_tier_rejected(monkeypatch):
     """Free-tier users should get 403 when calling Apify extraction."""
+    # Ensure BYPASS_TIER_GATE is not set for this test
+    monkeypatch.delenv("BYPASS_TIER_GATE", raising=False)
 
     async def mock_free_user() -> dict:
         return {"user_id": "free-user-456", "metadata": {"subscription": "free"}}

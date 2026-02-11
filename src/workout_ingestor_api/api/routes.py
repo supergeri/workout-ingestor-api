@@ -798,14 +798,15 @@ async def ingest_instagram_reel(
     if not url:
         raise HTTPException(status_code=400, detail="URL is required")
 
-    # Validate it's an Instagram URL
-    if "instagram.com" not in url:
+    # Validate it's a proper Instagram URL using shortcode regex
+    shortcode_match = InstagramReelService._extract_shortcode(url)
+    if not shortcode_match:
         raise HTTPException(
             status_code=400,
-            detail="URL must be an Instagram Reel URL (instagram.com/reel/...)",
+            detail="URL must be an Instagram Reel URL (instagram.com/reel/... or instagram.com/p/...)",
         )
 
-    shortcode = InstagramReelService._extract_shortcode(url)
+    shortcode = shortcode_match
 
     # Check cache first
     if not payload.skip_cache and shortcode:

@@ -137,7 +137,7 @@ async def get_user_with_metadata(
     """
     if x_api_key:
         user_id = validate_api_key(x_api_key)
-        return {"user_id": user_id, "metadata": {}}
+        return {"user_id": user_id, "metadata": {"subscription": "admin"}}
 
     if authorization:
         return _validate_jwt_with_metadata(authorization)
@@ -175,7 +175,7 @@ def _validate_jwt_with_metadata(authorization: str) -> dict:
             raise HTTPException(status_code=401, detail="Token missing user ID")
         return {
             "user_id": user_id,
-            "metadata": payload.get("metadata", {}),
+            "metadata": payload.get("metadata", payload.get("publicMetadata", payload.get("public_metadata", {}))),
         }
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
