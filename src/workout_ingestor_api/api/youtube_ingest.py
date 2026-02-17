@@ -24,6 +24,7 @@ from workout_ingestor_api.services.url_normalizer import (
     normalize_youtube_url,
     parse_youtube_url,
 )
+from workout_ingestor_api.services.workout_sanitizer import sanitize_workout_data
 from workout_ingestor_api.services.youtube_cache_service import YouTubeCacheService
 
 
@@ -795,6 +796,10 @@ async def ingest_youtube_impl(video_url: str, user_id: Optional[str] = None, ski
             else:
                 llm_error = f"Anthropic: {str(e)}"
             logger.warning(f"Anthropic parsing failed for video_id: {video_id}: {e}")
+
+    # Sanitize LLM output to fix common structural mistakes (same as Instagram path)
+    if workout_dict is not None:
+        workout_dict = sanitize_workout_data(workout_dict)
 
     # If no LLM available, fall back to basic parsing
     if workout_dict is None:
