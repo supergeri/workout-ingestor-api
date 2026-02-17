@@ -93,7 +93,8 @@ class TestStructureFixedToSuperset:
         assert result["blocks"][0]["structure"] == "superset"
         assert result["blocks"][0]["exercises"] == []
 
-    def test_circuit_structure_overridden_when_supersets_present(self):
+    def test_circuit_structure_preserved_when_supersets_present(self):
+        """Circuit blocks keep their structure — supersets are cleared instead."""
         block = {
             "label": "Circuit",
             "structure": "circuit",
@@ -101,7 +102,9 @@ class TestStructureFixedToSuperset:
             "supersets": [{"exercises": [EXERCISE_A, EXERCISE_B]}],
         }
         result = InstagramReelService._sanitize_workout_data(_make_workout([block]))
-        assert result["blocks"][0]["structure"] == "superset"
+        assert result["blocks"][0]["structure"] == "circuit"
+        assert result["blocks"][0]["supersets"] == []
+        assert result["blocks"][0]["exercises"] == [EXERCISE_A]
 
     def test_regular_structure_overridden_when_supersets_present(self):
         block = {
@@ -166,6 +169,57 @@ class TestNoSupersetsUntouched:
         result = InstagramReelService._sanitize_workout_data(_make_workout([block]))
         assert result["blocks"][0]["structure"] == "circuit"
         assert len(result["blocks"][0]["exercises"]) == 3
+
+    def test_amrap_block_preserved(self):
+        """AMRAP structure is preserved and supersets cleared."""
+        block = {
+            "label": "AMRAP 20",
+            "structure": "amrap",
+            "exercises": [EXERCISE_A, EXERCISE_B, EXERCISE_C],
+            "supersets": [{"exercises": [EXERCISE_A, EXERCISE_B]}],
+        }
+        result = InstagramReelService._sanitize_workout_data(_make_workout([block]))
+        assert result["blocks"][0]["structure"] == "amrap"
+        assert result["blocks"][0]["supersets"] == []
+        assert len(result["blocks"][0]["exercises"]) == 3
+
+    def test_emom_block_preserved(self):
+        """EMOM structure is preserved."""
+        block = {
+            "label": "EMOM 10",
+            "structure": "emom",
+            "exercises": [EXERCISE_A, EXERCISE_B],
+            "supersets": [],
+        }
+        result = InstagramReelService._sanitize_workout_data(_make_workout([block]))
+        assert result["blocks"][0]["structure"] == "emom"
+        assert len(result["blocks"][0]["exercises"]) == 2
+
+    def test_for_time_block_preserved(self):
+        """For-time structure is preserved and supersets cleared."""
+        block = {
+            "label": "For Time",
+            "structure": "for-time",
+            "exercises": [EXERCISE_A, EXERCISE_B, EXERCISE_C, EXERCISE_D],
+            "supersets": [{"exercises": [EXERCISE_A, EXERCISE_B]}],
+        }
+        result = InstagramReelService._sanitize_workout_data(_make_workout([block]))
+        assert result["blocks"][0]["structure"] == "for-time"
+        assert result["blocks"][0]["supersets"] == []
+        assert len(result["blocks"][0]["exercises"]) == 4
+
+    def test_rounds_block_preserved(self):
+        """Rounds structure is preserved."""
+        block = {
+            "label": "5 Rounds",
+            "structure": "rounds",
+            "rounds": 5,
+            "exercises": [EXERCISE_A, EXERCISE_B, EXERCISE_C],
+            "supersets": [],
+        }
+        result = InstagramReelService._sanitize_workout_data(_make_workout([block]))
+        assert result["blocks"][0]["structure"] == "rounds"
+        assert result["blocks"][0]["rounds"] == 5
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +300,35 @@ class TestMixedBlocks:
         assert result["blocks"][2]["structure"] == "regular"
         assert len(result["blocks"][2]["exercises"]) == 1
 
+    def test_circuit_then_superset_blocks(self):
+        """Mixed workout: circuit block followed by superset block — both handled correctly."""
+        blocks = [
+            {
+                "label": "HYROX Circuit",
+                "structure": "circuit",
+                "rounds": 3,
+                "exercises": [EXERCISE_A, EXERCISE_B, EXERCISE_C],
+                "supersets": [{"exercises": [EXERCISE_A, EXERCISE_B]}],  # LLM mistake
+            },
+            {
+                "label": "Finisher Supersets",
+                "structure": "superset",
+                "exercises": [],
+                "supersets": [{"exercises": [EXERCISE_C, EXERCISE_D]}],
+            },
+        ]
+        result = InstagramReelService._sanitize_workout_data(_make_workout(blocks))
+
+        # Circuit block: structure preserved, supersets cleared
+        assert result["blocks"][0]["structure"] == "circuit"
+        assert result["blocks"][0]["supersets"] == []
+        assert len(result["blocks"][0]["exercises"]) == 3
+
+        # Superset block: unchanged
+        assert result["blocks"][1]["structure"] == "superset"
+        assert result["blocks"][1]["exercises"] == []
+        assert len(result["blocks"][1]["supersets"]) == 1
+
     def test_two_superset_blocks(self):
         blocks = [
             {
@@ -256,7 +339,7 @@ class TestMixedBlocks:
             },
             {
                 "label": "Lower Body Supersets",
-                "structure": "circuit",  # Wrong
+                "structure": "regular",  # Wrong — should be "superset"
                 "exercises": [],
                 "supersets": [{"exercises": [EXERCISE_C, EXERCISE_D]}],
             },
@@ -325,6 +408,65 @@ class TestEdgeCases:
         ])
         result = InstagramReelService._sanitize_workout_data(workout)
         assert result is workout
+
+    def test_hyrox_circuit_not_converted_to_superset(self):
+        """Reproduction case from AMA-571: HYROX circuit with 4 exercises should NOT become supersets."""
+        block = {
+            "label": "HYROX Conditioning",
+            "structure": "circuit",
+            "rounds": 5,
+            "exercises": [
+                {"name": "Ski Erg", "distance_m": 500, "type": "cardio"},
+                {"name": "Sled Pull", "distance_m": 25, "type": "strength", "notes": "120kg + sled"},
+                {"name": "Bike Erg", "distance_m": 2500, "type": "cardio"},
+                {"name": "Wall Balls", "reps": 20, "type": "strength", "notes": "9kg ball"},
+            ],
+            "supersets": [],
+        }
+        result = InstagramReelService._sanitize_workout_data(_make_workout([block]))
+        assert result["blocks"][0]["structure"] == "circuit"
+        assert result["blocks"][0]["rounds"] == 5
+        assert len(result["blocks"][0]["exercises"]) == 4
+        assert result["blocks"][0]["supersets"] == []
+
+    def test_hyrox_circuit_with_llm_superset_mistake(self):
+        """If LLM returns circuit structure but also populates supersets, sanitizer clears supersets."""
+        block = {
+            "label": "HYROX Conditioning",
+            "structure": "circuit",
+            "rounds": 5,
+            "exercises": [
+                {"name": "Ski Erg", "distance_m": 500, "type": "cardio"},
+                {"name": "Sled Pull", "distance_m": 25, "type": "strength"},
+                {"name": "Bike Erg", "distance_m": 2500, "type": "cardio"},
+                {"name": "Wall Balls", "reps": 20, "type": "strength"},
+            ],
+            "supersets": [
+                {"exercises": [{"name": "Ski Erg"}, {"name": "Sled Pull"}]},
+                {"exercises": [{"name": "Bike Erg"}, {"name": "Wall Balls"}]},
+            ],
+        }
+        result = InstagramReelService._sanitize_workout_data(_make_workout([block]))
+        assert result["blocks"][0]["structure"] == "circuit"
+        assert result["blocks"][0]["supersets"] == []
+        assert len(result["blocks"][0]["exercises"]) == 4
+
+    def test_circuit_label_but_exercises_only_in_supersets(self):
+        """Edge case: LLM returns circuit structure but puts exercises in supersets only.
+
+        Sanitizer should fall through to superset path to avoid data loss.
+        """
+        block = {
+            "label": "Circuit Mislabel",
+            "structure": "circuit",
+            "exercises": [],
+            "supersets": [{"exercises": [EXERCISE_A, EXERCISE_B, EXERCISE_C]}],
+        }
+        result = InstagramReelService._sanitize_workout_data(_make_workout([block]))
+        # Should convert to superset to preserve the exercises (data loss prevention)
+        assert result["blocks"][0]["structure"] == "superset"
+        assert result["blocks"][0]["exercises"] == []
+        assert len(result["blocks"][0]["supersets"]) == 1
 
     def test_extra_block_fields_preserved(self):
         """Sanitizer should not strip unknown fields from blocks."""

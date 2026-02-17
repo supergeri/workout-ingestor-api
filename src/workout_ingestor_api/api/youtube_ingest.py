@@ -8,6 +8,7 @@ processed videos.
 
 import json
 import logging
+import os
 import re
 import uuid
 from typing import Any, Dict, List, Optional
@@ -107,41 +108,113 @@ Analyze this transcript and extract the workout routine being described. Focus o
 2. Sets and reps (extract specific numbers when mentioned)
 3. Important form cues and technique notes
 4. Rest periods if mentioned
-5. Any workout structure (supersets, circuits, etc.)
-6. Approximate timestamp in the video where each exercise is discussed{duration_context}
+5. Detecting CIRCUITS and ROUNDS — see rules below (check FIRST)
+6. Detecting SUPERSETS — see rules below (check SECOND, only if not a circuit)
+7. Approximate timestamp in the video where each exercise is discussed{duration_context}
 
 Transcript from video titled "{title}":
 ---
 {transcript}
 ---
 
-Return ONLY a valid JSON object with this exact structure:
+CIRCUIT / ROUNDS DETECTION — CHECK THIS FIRST:
+A circuit or rounds-based workout is 3+ exercises done in sequence, repeated for N rounds. Detect when:
+- Text mentions "N rounds", "N rounds of", "repeat N times", "x N rounds"
+- Text lists 3 or more exercises to be done in order, then repeated
+- Workout styles like HYROX, CrossFit WODs, AMRAP, EMOM, For Time are almost always circuits, NOT supersets
+- If there are 3+ exercises and a round count, it is a CIRCUIT — never a superset
+
+When you detect a circuit:
+- Set structure to "circuit" (or "amrap"/"emom"/"for-time" if applicable)
+- Put ALL exercises in the "exercises" array (NOT in supersets)
+- Set "rounds" to the number of rounds
+- Set "sets" on each exercise to null (rounds handle repetition)
+- Use "distance_m" for distance-based exercises (e.g. 500m ski = distance_m: 500)
+- "supersets" MUST be [] (empty)
+
+SUPERSET DETECTION — CHECK ONLY IF NOT A CIRCUIT:
+Supersets are EXACTLY 2 exercises paired back-to-back. Detect when:
+- Two exercises appear on the SAME LINE separated by "and", "&", "/", or "+"
+- Exercises are labeled A1/A2, B1/B2, etc.
+- Exercises are explicitly called "superset" or "paired with"
+- ONLY use superset when exercises come in pairs of 2 — never for 3+ exercises in a round
+
+CRITICAL RULE — DO NOT VIOLATE:
+When structure is "superset", the "exercises" array MUST be empty []. ALL exercises go inside "supersets" only.
+NEVER put the same exercise in both "exercises" and "supersets".
+
+Return ONLY a valid JSON object.
+
+STRUCTURE FOR CIRCUIT / ROUNDS BLOCKS (3+ exercises, repeated):
+{{
+  "label": "HYROX Conditioning",
+  "structure": "circuit",
+  "rounds": 5,
+  "exercises": [
+    {{
+      "name": "Ski Erg",
+      "sets": null,
+      "reps": null,
+      "distance_m": 500,
+      "type": "cardio",
+      "notes": "Steady pace"
+    }},
+    {{
+      "name": "Wall Balls",
+      "sets": null,
+      "reps": 20,
+      "type": "strength",
+      "notes": "9kg ball"
+    }}
+  ],
+  "supersets": []
+}}
+
+STRUCTURE FOR NON-SUPERSET, NON-CIRCUIT BLOCKS (straight sets):
+{{
+  "label": "Main Workout",
+  "structure": null,
+  "exercises": [
+    {{
+      "name": "Exercise Name",
+      "sets": 3,
+      "reps": 10,
+      "reps_range": null,
+      "duration_sec": null,
+      "rest_sec": null,
+      "distance_m": null,
+      "type": "strength",
+      "notes": "Form cues and tips here",
+      "video_start_sec": 60,
+      "video_end_sec": 120
+    }}
+  ],
+  "supersets": []
+}}
+
+STRUCTURE FOR SUPERSET BLOCKS (exactly 2 exercises paired):
+{{
+  "label": "Strength Supersets",
+  "structure": "superset",
+  "exercises": [],
+  "supersets": [
+    {{
+      "exercises": [
+        {{"name": "Exercise A", "sets": 5, "reps": 5, "type": "strength"}},
+        {{"name": "Exercise B", "sets": 5, "reps": 5, "type": "strength"}}
+      ]
+    }}
+  ]
+}}
+NOTE: "exercises" is [] (empty) above. This is mandatory when structure is "superset".
+
+Full response format:
 {{
   "title": "{title}",
   "workout_type": "strength | circuit | hiit | cardio | follow_along | mixed",
   "workout_type_confidence": 0.0-1.0,
   "video_duration_sec": {video_duration_sec if video_duration_sec else 'null'},
-  "blocks": [
-    {{
-      "label": "Main Workout",
-      "structure": null,
-      "exercises": [
-        {{
-          "name": "Exercise Name",
-          "sets": 3,
-          "reps": 10,
-          "reps_range": null,
-          "duration_sec": null,
-          "rest_sec": null,
-          "distance_m": null,
-          "type": "strength",
-          "notes": "Form cues and tips here",
-          "video_start_sec": 60,
-          "video_end_sec": 120
-        }}
-      ]
-    }}
-  ]
+  "blocks": [ ... ]
 }}
 
 Workout Type Detection:
@@ -160,7 +233,12 @@ Rules:
 - Use "strength" for weight exercises, "cardio" for running/cycling, "interval" for timed work
 - Include helpful notes from the transcript about form, tempo, or technique
 - Standardize exercise names (e.g., "Beijing curl" should be normalized to a proper exercise name if it's a variation)
-- Group related exercises together if the video describes them as supersets or circuits
+- FIRST check for circuits/rounds (3+ exercises repeated) — these are NOT supersets
+- THEN check for supersets (exactly 2 exercises paired on same line)
+- For circuits: put ALL exercises in "exercises", set "rounds", leave "supersets" empty
+- For supersets: put ALL exercises in "supersets", leave "exercises" empty
+- NEVER put exercises in BOTH "exercises" and "supersets" — pick one or the other per block
+- Use "distance_m" for distance-based exercises (500m, 25m, 2.5km = 2500, etc.)
 - For video_start_sec: estimate when each exercise is first discussed/demonstrated in the video
 - For video_end_sec: estimate when the discussion of that exercise ends (before the next exercise starts)
 
@@ -241,41 +319,113 @@ Analyze this transcript and extract the workout routine being described. Focus o
 2. Sets and reps (extract specific numbers when mentioned)
 3. Important form cues and technique notes
 4. Rest periods if mentioned
-5. Any workout structure (supersets, circuits, etc.)
-6. Approximate timestamp in the video where each exercise is discussed{duration_context}
+5. Detecting CIRCUITS and ROUNDS — see rules below (check FIRST)
+6. Detecting SUPERSETS — see rules below (check SECOND, only if not a circuit)
+7. Approximate timestamp in the video where each exercise is discussed{duration_context}
 
 Transcript from video titled "{title}":
 ---
 {transcript}
 ---
 
-Return ONLY a valid JSON object with this exact structure:
+CIRCUIT / ROUNDS DETECTION — CHECK THIS FIRST:
+A circuit or rounds-based workout is 3+ exercises done in sequence, repeated for N rounds. Detect when:
+- Text mentions "N rounds", "N rounds of", "repeat N times", "x N rounds"
+- Text lists 3 or more exercises to be done in order, then repeated
+- Workout styles like HYROX, CrossFit WODs, AMRAP, EMOM, For Time are almost always circuits, NOT supersets
+- If there are 3+ exercises and a round count, it is a CIRCUIT — never a superset
+
+When you detect a circuit:
+- Set structure to "circuit" (or "amrap"/"emom"/"for-time" if applicable)
+- Put ALL exercises in the "exercises" array (NOT in supersets)
+- Set "rounds" to the number of rounds
+- Set "sets" on each exercise to null (rounds handle repetition)
+- Use "distance_m" for distance-based exercises (e.g. 500m ski = distance_m: 500)
+- "supersets" MUST be [] (empty)
+
+SUPERSET DETECTION — CHECK ONLY IF NOT A CIRCUIT:
+Supersets are EXACTLY 2 exercises paired back-to-back. Detect when:
+- Two exercises appear on the SAME LINE separated by "and", "&", "/", or "+"
+- Exercises are labeled A1/A2, B1/B2, etc.
+- Exercises are explicitly called "superset" or "paired with"
+- ONLY use superset when exercises come in pairs of 2 — never for 3+ exercises in a round
+
+CRITICAL RULE — DO NOT VIOLATE:
+When structure is "superset", the "exercises" array MUST be empty []. ALL exercises go inside "supersets" only.
+NEVER put the same exercise in both "exercises" and "supersets".
+
+Return ONLY a valid JSON object.
+
+STRUCTURE FOR CIRCUIT / ROUNDS BLOCKS (3+ exercises, repeated):
+{{
+  "label": "HYROX Conditioning",
+  "structure": "circuit",
+  "rounds": 5,
+  "exercises": [
+    {{
+      "name": "Ski Erg",
+      "sets": null,
+      "reps": null,
+      "distance_m": 500,
+      "type": "cardio",
+      "notes": "Steady pace"
+    }},
+    {{
+      "name": "Wall Balls",
+      "sets": null,
+      "reps": 20,
+      "type": "strength",
+      "notes": "9kg ball"
+    }}
+  ],
+  "supersets": []
+}}
+
+STRUCTURE FOR NON-SUPERSET, NON-CIRCUIT BLOCKS (straight sets):
+{{
+  "label": "Main Workout",
+  "structure": null,
+  "exercises": [
+    {{
+      "name": "Exercise Name",
+      "sets": 3,
+      "reps": 10,
+      "reps_range": null,
+      "duration_sec": null,
+      "rest_sec": null,
+      "distance_m": null,
+      "type": "strength",
+      "notes": "Form cues and tips here",
+      "video_start_sec": 60,
+      "video_end_sec": 120
+    }}
+  ],
+  "supersets": []
+}}
+
+STRUCTURE FOR SUPERSET BLOCKS (exactly 2 exercises paired):
+{{
+  "label": "Strength Supersets",
+  "structure": "superset",
+  "exercises": [],
+  "supersets": [
+    {{
+      "exercises": [
+        {{"name": "Exercise A", "sets": 5, "reps": 5, "type": "strength"}},
+        {{"name": "Exercise B", "sets": 5, "reps": 5, "type": "strength"}}
+      ]
+    }}
+  ]
+}}
+NOTE: "exercises" is [] (empty) above. This is mandatory when structure is "superset".
+
+Full response format:
 {{
   "title": "{title}",
   "workout_type": "strength | circuit | hiit | cardio | follow_along | mixed",
   "workout_type_confidence": 0.0-1.0,
   "video_duration_sec": {video_duration_sec if video_duration_sec else 'null'},
-  "blocks": [
-    {{
-      "label": "Main Workout",
-      "structure": null,
-      "exercises": [
-        {{
-          "name": "Exercise Name",
-          "sets": 3,
-          "reps": 10,
-          "reps_range": null,
-          "duration_sec": null,
-          "rest_sec": null,
-          "distance_m": null,
-          "type": "strength",
-          "notes": "Form cues and tips here",
-          "video_start_sec": 60,
-          "video_end_sec": 120
-        }}
-      ]
-    }}
-  ]
+  "blocks": [ ... ]
 }}
 
 Workout Type Detection:
@@ -294,7 +444,12 @@ Rules:
 - Use "strength" for weight exercises, "cardio" for running/cycling, "interval" for timed work
 - Include helpful notes from the transcript about form, tempo, or technique
 - Standardize exercise names
-- Group related exercises together if the video describes them as supersets or circuits
+- FIRST check for circuits/rounds (3+ exercises repeated) — these are NOT supersets
+- THEN check for supersets (exactly 2 exercises paired on same line)
+- For circuits: put ALL exercises in "exercises", set "rounds", leave "supersets" empty
+- For supersets: put ALL exercises in "supersets", leave "exercises" empty
+- NEVER put exercises in BOTH "exercises" and "supersets" — pick one or the other per block
+- Use "distance_m" for distance-based exercises (500m, 25m, 2.5km = 2500, etc.)
 - For video_start_sec: estimate when each exercise is first discussed/demonstrated in the video
 - For video_end_sec: estimate when the discussion of that exercise ends (before the next exercise starts)
 
