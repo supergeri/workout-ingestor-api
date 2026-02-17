@@ -45,6 +45,7 @@ Parse the following voice transcription into a structured workout. The user may 
 - Strength workouts with exercises, sets, reps, weights
 - HIIT/circuit workouts with timed intervals
 - Mixed workouts combining multiple types
+- Superset patterns where two exercises are performed back-to-back
 
 Output ONLY valid JSON matching this exact schema:
 
@@ -74,7 +75,10 @@ Output ONLY valid JSON matching this exact schema:
     {"kind": "reps", "reps": <number>, "name": "Exercise Name", "sets": <number>, "load": "weight description", "restSec": <rest_between_sets>},
 
     // For repeated intervals (use this to group work/rest cycles):
-    {"kind": "repeat", "reps": <number_of_rounds>, "intervals": [/* nested intervals */]}
+    {"kind": "repeat", "reps": <number_of_rounds>, "intervals": [/* nested intervals */]},
+
+    // For supersets: two exercises performed back-to-back without rest between them:
+    {"kind": "repeat", "reps": <number_of_rounds>, "intervals": [{"kind": "reps", "reps": <num>, "name": "Exercise A", "sets": 1}, {"kind": "reps", "reps": <num>, "name": "Exercise B", "sets": 1}]}
   ],
   "confidence": <0.0-1.0 based on parsing certainty>,
   "suggestions": ["Helpful suggestion 1", "Suggestion 2"]
@@ -89,12 +93,24 @@ Parsing Rules:
 6. For strength: extract exercise names, sets, reps, and weights if mentioned
 7. Set confidence: 0.9+ if very clear, 0.7-0.9 if reasonably clear, 0.5-0.7 if some guessing
 8. Add suggestions for ambiguous parts (e.g., "Consider specifying rest duration")
+9. For supersets: detect patterns like "A plus B", "A and B", "superset of A and B", "back to back", and group them in a repeat block with both exercises
 
 Sport Detection:
 - "running": mentions running, jogging, pace, tempo, intervals, track, miles, 5k
 - "strength": mentions weights, reps, sets, barbell, dumbbell, exercises
 - "hiit": mentions HIIT, Tabata, work/rest intervals, high intensity
 - "cardio": general cardio, cycling, rowing, elliptical
+Superset Detection:
+Common voice patterns that indicate supersets:
+- "Pull-ups 4x8 plus Z Press 4x8" → superset of pull-ups and Z Press
+- "Squats and lunges" performed consecutively → superset
+- "Superset of push-ups and rows" → group both exercises
+- "A plus B" → A and B are a superset
+- "Back to back" exercises → superset
+- "Dumbbell curl then tricep extension" without rest → superset
+
+When detecting supersets, nest both exercises inside a single repeat block with the same reps.
+
 - "mixed": combination of multiple types
 
 Examples:
@@ -135,6 +151,25 @@ Output:
   ],
   "confidence": 0.92,
   "suggestions": ["Rest periods estimated at 90 seconds - adjust as needed"]
+}
+
+Input: "Pull-ups 4x8 plus Z Press 4x8"
+Output:
+{
+  "name": "Upper Body Superset",
+  "sport": "strength",
+  "duration": 1800,
+  "description": "Pull-ups and Z Press superset",
+  "source": "ai",
+  "sourceUrl": null,
+  "intervals": [
+    {"kind": "repeat", "reps": 4, "intervals": [
+      {"kind": "reps", "reps": 8, "name": "Pull-up", "sets": 1},
+      {"kind": "reps", "reps": 8, "name": "Z Press", "sets": 1}
+    ]}
+  ],
+  "confidence": 0.92,
+  "suggestions": ["Consider adding rest between superset rounds"]
 }
 
 Return ONLY the JSON object, no additional text or markdown formatting."""
