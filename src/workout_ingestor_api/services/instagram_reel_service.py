@@ -62,28 +62,85 @@ Analyze this text and extract the workout routine being described. Focus on:
 2. Sets and reps (extract specific numbers when mentioned)
 3. Important form cues and technique notes
 4. Rest periods if mentioned
-5. Detecting SUPERSETS — see rules below
-6. Approximate timestamp in the video where each exercise is discussed{duration_context}
+5. Detecting CIRCUITS and ROUNDS — see rules below (check FIRST)
+6. Detecting SUPERSETS — see rules below (check SECOND, only if not a circuit)
+7. Approximate timestamp in the video where each exercise is discussed{duration_context}
 
 Text from Instagram Reel titled "{title}":
 ---
 {transcript}
 ---
 
-SUPERSET DETECTION — THIS IS CRITICAL:
-Exercises are supersets (paired exercises done back-to-back) when:
+CIRCUIT / ROUNDS DETECTION — CHECK THIS FIRST:
+A circuit or rounds-based workout is 3+ exercises done in sequence, repeated for N rounds. Detect when:
+- Text mentions "N rounds", "N rounds of", "repeat N times", "x N rounds"
+- Text lists 3 or more exercises to be done in order, then repeated
+- Workout styles like HYROX, CrossFit WODs, AMRAP, EMOM, For Time are almost always circuits, NOT supersets
+- If there are 3+ exercises and a round count, it is a CIRCUIT — never a superset
+
+When you detect a circuit:
+- Set structure to "circuit" (or "amrap"/"emom"/"for-time" if applicable)
+- Put ALL exercises in the "exercises" array (NOT in supersets)
+- Set "rounds" to the number of rounds
+- Set "sets" on each exercise to null (rounds handle repetition)
+- Use "distance_m" for distance-based exercises (e.g. 500m ski = distance_m: 500)
+- "supersets" MUST be [] (empty)
+
+SUPERSET DETECTION — CHECK ONLY IF NOT A CIRCUIT:
+Supersets are EXACTLY 2 exercises paired back-to-back. Detect when:
 - Two exercises appear on the SAME LINE separated by "and", "&", "/", or "+"
 - Exercises are labeled A1/A2, B1/B2, etc.
 - Exercises are explicitly called "superset" or "paired with"
+- ONLY use superset when exercises come in pairs of 2 — never for 3+ exercises in a round
 
 CRITICAL RULE — DO NOT VIOLATE:
 When structure is "superset", the "exercises" array MUST be empty []. ALL exercises go inside "supersets" only.
 NEVER put the same exercise in both "exercises" and "supersets". This is the #1 most common mistake.
-If ALL lines in the text are exercise pairs (e.g. "A and B", "C and D"), use a SINGLE block with structure "superset" containing ALL pairs in the "supersets" array.
 
 Return ONLY a valid JSON object.
 
-STRUCTURE FOR NON-SUPERSET BLOCKS (no pairs detected):
+STRUCTURE FOR CIRCUIT / ROUNDS BLOCKS (3+ exercises, repeated):
+{{
+  "label": "HYROX Conditioning",
+  "structure": "circuit",
+  "rounds": 5,
+  "exercises": [
+    {{
+      "name": "Ski Erg",
+      "sets": null,
+      "reps": null,
+      "distance_m": 500,
+      "type": "cardio",
+      "notes": "Steady pace"
+    }},
+    {{
+      "name": "Sled Pull",
+      "sets": null,
+      "reps": null,
+      "distance_m": 25,
+      "type": "strength",
+      "notes": "120kg + sled"
+    }},
+    {{
+      "name": "Bike Erg",
+      "sets": null,
+      "reps": null,
+      "distance_m": 2500,
+      "type": "cardio",
+      "notes": "Race pace"
+    }},
+    {{
+      "name": "Wall Balls",
+      "sets": null,
+      "reps": 20,
+      "type": "strength",
+      "notes": "9kg ball"
+    }}
+  ],
+  "supersets": []
+}}
+
+STRUCTURE FOR NON-SUPERSET, NON-CIRCUIT BLOCKS (straight sets):
 {{
   "label": "Block Name",
   "structure": null,
@@ -105,7 +162,7 @@ STRUCTURE FOR NON-SUPERSET BLOCKS (no pairs detected):
   "supersets": []
 }}
 
-STRUCTURE FOR SUPERSET BLOCKS (pairs detected):
+STRUCTURE FOR SUPERSET BLOCKS (exactly 2 exercises paired):
 {{
   "label": "Strength Supersets",
   "structure": "superset",
@@ -121,30 +178,6 @@ STRUCTURE FOR SUPERSET BLOCKS (pairs detected):
 }}
 NOTE: "exercises" is [] (empty) above. This is mandatory when structure is "superset".
 
-CONCRETE EXAMPLE — follow this exactly for paired exercises:
-Input: "Squats (5x5) and box jumps (5x5)\nSeated jumps (5x5) and hip thrusts (5x8)"
-Output block:
-{{
-  "label": "Supersets",
-  "structure": "superset",
-  "exercises": [],
-  "supersets": [
-    {{
-      "exercises": [
-        {{"name": "Squats", "sets": 5, "reps": 5, "type": "strength"}},
-        {{"name": "Box Jumps", "sets": 5, "reps": 5, "type": "plyometric"}}
-      ]
-    }},
-    {{
-      "exercises": [
-        {{"name": "Seated Jumps", "sets": 5, "reps": 5, "type": "plyometric"}},
-        {{"name": "Hip Thrusts", "sets": 5, "reps": 8, "type": "strength"}}
-      ]
-    }}
-  ]
-}}
-Notice: "exercises" is [] and ALL exercises are inside "supersets" only. One superset per paired line.
-
 Full response format:
 {{
   "title": "{title}",
@@ -159,10 +192,13 @@ Rules:
 - If sets/reps aren't stated, use reasonable defaults (3-4 sets, 8-12 reps for strength)
 - Include helpful notes from the transcript about form, tempo, or technique
 - Standardize exercise names (e.g. "RDLS" → "Romanian Deadlifts")
-- ALWAYS detect supersets: two exercises on the same line = superset pair
-- When ALL lines are pairs, use ONE block with structure "superset" — do NOT split into multiple blocks
+- FIRST check for circuits/rounds (3+ exercises repeated) — these are NOT supersets
+- THEN check for supersets (exactly 2 exercises paired on same line)
+- For circuits: put ALL exercises in "exercises", set "rounds", leave "supersets" empty
+- For supersets: put ALL exercises in "supersets", leave "exercises" empty
 - NEVER put exercises in BOTH "exercises" and "supersets" — pick one or the other per block
 - Use multiple blocks only if the text describes truly distinct sections (e.g. "Warm-up" vs "Main work")
+- Use "distance_m" for distance-based exercises (500m, 25m, 2.5km = 2500, etc.)
 - For video_start_sec/video_end_sec: estimate when each exercise is discussed
 - Return ONLY JSON, no markdown, no code blocks"""
 
@@ -186,15 +222,27 @@ Rules:
         """Sanitize LLM output to fix common structural mistakes.
 
         Fixes:
-        1. If supersets is non-empty: set structure to "superset", clear exercises[]
-        2. If structure == "superset" but supersets is empty: reset structure to null
-        3. Validates blocks is a list and superset entries have exercises
+        1. Preserve circuit/rounds/amrap/emom/for-time blocks (exercises stay in exercises[])
+        2. If supersets is non-empty and NOT a circuit: set structure to "superset", clear exercises[]
+        3. If structure == "superset" but supersets is empty: reset structure to null
+        4. Validates blocks is a list and superset entries have exercises
         """
+        circuit_structures = {"circuit", "rounds", "amrap", "emom", "for-time"}
+
         blocks = workout_data.get("blocks")
         if not isinstance(blocks, list):
             return workout_data
 
         for block in blocks:
+            structure = block.get("structure")
+
+            # Preserve circuit-type blocks — exercises belong in exercises[], not supersets
+            # But only if exercises[] is non-empty; if LLM put everything in supersets
+            # with a circuit label, fall through to the superset path to avoid data loss
+            if structure in circuit_structures and block.get("exercises"):
+                block["supersets"] = []
+                continue
+
             supersets = block.get("supersets", [])
             # Filter out malformed superset entries (must have exercises list)
             valid_supersets = [
@@ -206,7 +254,7 @@ Rules:
             if valid_supersets:
                 block["structure"] = "superset"
                 block["exercises"] = []
-            elif block.get("structure") == "superset":
+            elif structure == "superset":
                 # Structure says superset but no valid supersets — reset
                 block["structure"] = None
         return workout_data
