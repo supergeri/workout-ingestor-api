@@ -640,15 +640,41 @@ async def ingest_youtube_impl(video_url: str, user_id: Optional[str] = None, ski
 
     if resp.status_code == 401:
         logger.error(f"Transcript API token rejected (401) for video_id: {video_id}")
-        raise HTTPException(status_code=500, detail="Transcript API token rejected (401)")
+        raise HTTPException(
+            status_code=500,
+            detail="[AMA-242] Transcript API token rejected (401). Check YT_TRANSCRIPT_API_TOKEN.",
+            headers={"X-Failure-Category": "api_auth_error"},
+        )
+    if resp.status_code == 403:
+        # 403 can mean: age-restricted, region-locked, private, or API block
+        logger.warning(f"Transcript API access denied (403) for video_id: {video_id}")
+        # Try to extract more specific error from response
+        error_detail = "Transcript API access denied (403). Possible causes: age-restricted video, region-locked content, private/unlisted video, or video removed."
+        raise HTTPException(
+            status_code=403,
+            detail=f"[AMA-242] {error_detail}",
+            headers={"X-Failure-Category": "access_denied_403"},
+        )
     if resp.status_code == 404:
         logger.warning(f"Transcript not found (404) for video_id: {video_id}")
-        raise HTTPException(status_code=404, detail="Transcript not found for provided video")
+        raise HTTPException(
+            status_code=404,
+            detail="[AMA-242] Transcript not found for provided video. Possible causes: video has no captions, video is too short (<30s), video is a live stream, or video was removed.",
+            headers={"X-Failure-Category": "transcript_not_found_404"},
+        )
+    if resp.status_code == 429:
+        logger.warning(f"Transcript API rate limited (429) for video_id: {video_id}")
+        raise HTTPException(
+            status_code=429,
+            detail="[AMA-242] Transcript API rate limited (429). Too many requests. Try again later.",
+            headers={"X-Failure-Category": "rate_limited_429"},
+        )
     if resp.status_code >= 400:
         logger.error(f"Transcript API error ({resp.status_code}) for video_id: {video_id}: {resp.text[:500]}")
         raise HTTPException(
             status_code=502,
-            detail=f"Transcript API error ({resp.status_code}): {resp.text}",
+            detail=f"[AMA-242] Transcript API error ({resp.status_code}): {resp.text[:200]}",
+            headers={"X-Failure-Category": "api_error"},
         )
 
     data: Any = resp.json()
@@ -663,9 +689,11 @@ async def ingest_youtube_impl(video_url: str, user_id: Optional[str] = None, ski
                 break
 
     if not entry:
+        logger.warning(f"Transcript API returned no entry for video_id: {video_id}")
         raise HTTPException(
             status_code=502,
-            detail="Transcript API returned no data for video",
+            detail="[AMA-242] Transcript API returned no data for video. Video may not exist or may have been removed.",
+            headers={"X-Failure-Category": "no_entry_in_response"},
         )
 
     # Extract transcript text
@@ -680,9 +708,11 @@ async def ingest_youtube_impl(video_url: str, user_id: Optional[str] = None, ski
                     break
 
     if not transcript_segments:
+        logger.warning(f"No transcript segments found for video_id: {video_id}")
         raise HTTPException(
             status_code=502,
-            detail="Transcript API response did not include text",
+            detail="[AMA-242] No transcript segments found. Video may not have captions enabled or auto-captions may not be available.",
+            headers={"X-Failure-Category": "no_transcript_segments"},
         )
 
     transcript_text = "\n".join(
@@ -690,9 +720,11 @@ async def ingest_youtube_impl(video_url: str, user_id: Optional[str] = None, ski
     ).strip()
 
     if not transcript_text:
+        logger.warning(f"Transcript text is empty for video_id: {video_id}")
         raise HTTPException(
             status_code=502,
-            detail="Transcript API response did not include text",
+            detail="[AMA-242] Transcript text is empty. Video may have captions disabled or only have auto-generated captions that couldn't be processed.",
+            headers={"X-Failure-Category": "empty_transcript_text"},
         )
 
     # Get video title
