@@ -210,10 +210,24 @@ Return ONLY the JSON object, no additional text or markdown formatting."""
                 message="The transcription was too short to create a structured workout"
             )
 
+        # Validate sport_hint to prevent prompt injection and DoS
+        if sport_hint:
+            # Limit length to prevent DoS
+            if len(sport_hint) > 100:
+                logger.warning(f"sport_hint exceeds max length (100), truncating")
+                sport_hint = sport_hint[:100]
+            # Whitelist allowed characters (alphanumeric, spaces, hyphens)
+            if not re.match(r'^[\w\s-]+$', sport_hint):
+                logger.warning(f"sport_hint contains invalid characters, sanitizing")
+                sport_hint = re.sub(r'[^\w\s-]', '', sport_hint)
+            # Use structured parameter formatting to prevent prompt injection
+            safe_sport_hint = sport_hint.strip()
+
         # Build the prompt with optional sport hint
         user_content = f"Voice transcription:\n{transcription}"
         if sport_hint:
-            user_content += f"\n\nSport type hint: {sport_hint}"
+            # Use structured format to prevent prompt injection
+            user_content += f"\n\n[SPORT_HINT]: {safe_sport_hint}"
 
         # Create context for tracking
         context = AIRequestContext(
@@ -240,9 +254,14 @@ Return ONLY the JSON object, no additional text or markdown formatting."""
             result_text = response.choices[0].message.content
 
             # Extract JSON from response (model may add markdown formatting)
-            json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
+            # Try to find JSON block first, being more careful with nested structures
+            json_match = re.search(r'\{[\s\S]*\}', result_text)
             if json_match:
-                return json.loads(json_match.group(0))
+                try:
+                    return json.loads(json_match.group(0))
+                except json.JSONDecodeError:
+                    # Fall back to trying entire response if regex match fails
+                    pass
             return json.loads(result_text)
 
         try:
