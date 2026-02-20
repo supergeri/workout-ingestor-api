@@ -45,3 +45,15 @@ def test_route_pinterest():
     assert result is not None
     assert result.platform == "pinterest"
     assert result.source_id == "123456789"
+
+def test_route_tiktok_shortlink():
+    result = route_url("https://vm.tiktok.com/ZMhXxxx123/")
+    assert result is not None
+    assert result.platform == "tiktok"
+    assert result.source_id == "ZMhXxxx123"
+
+def test_route_youtube_playlist_url():
+    result = route_url("https://www.youtube.com/watch?list=PLxxx&v=dQw4w9WgXcQ")
+    assert result is not None
+    assert result.platform == "youtube"
+    assert result.source_id == "dQw4w9WgXcQ"

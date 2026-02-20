@@ -17,7 +17,9 @@ class RoutingResult:
 # The first capture group must be the source ID.
 _PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r"instagram\.com/(?:p|reel|tv)/([A-Za-z0-9_-]+)"), "instagram"),
-    (re.compile(r"(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)([A-Za-z0-9_-]{11})"), "youtube"),
+    (re.compile(r"youtube\.com/watch[^#]*[?&]v=([A-Za-z0-9_-]{11})"), "youtube"),
+    (re.compile(r"youtu\.be/([A-Za-z0-9_-]{11})"), "youtube"),
+    (re.compile(r"youtube\.com/shorts/([A-Za-z0-9_-]{11})"), "youtube"),
     (re.compile(r"tiktok\.com/@[\w.]+/video/(\d+)"), "tiktok"),
     (re.compile(r"vm\.tiktok\.com/([A-Za-z0-9]+)"), "tiktok"),
     (re.compile(r"pinterest\.com/pin/(\d+)"), "pinterest"),

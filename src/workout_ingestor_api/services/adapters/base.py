@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Any, Dict, List
 
 
 class PlatformFetchError(RuntimeError):
@@ -16,7 +16,7 @@ class MediaContent:
     primary_text: str
     secondary_texts: List[str] = field(default_factory=list)
     title: str = ""
-    media_metadata: Dict = field(default_factory=dict)
+    media_metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class PlatformAdapter(ABC):

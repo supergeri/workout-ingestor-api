@@ -6,8 +6,15 @@ _ADAPTER_REGISTRY: Dict[str, Type[PlatformAdapter]] = {}
 
 
 def register_adapter(adapter_class: Type[PlatformAdapter]) -> None:
-    """Register a platform adapter class."""
-    _ADAPTER_REGISTRY[adapter_class.platform_name()] = adapter_class
+    """Register a platform adapter class.
+
+    Raises:
+        ValueError: If an adapter is already registered for this platform.
+    """
+    name = adapter_class.platform_name()
+    if name in _ADAPTER_REGISTRY:
+        raise ValueError(f"Adapter already registered for platform '{name}'")
+    _ADAPTER_REGISTRY[name] = adapter_class
 
 
 def get_adapter(platform: str) -> PlatformAdapter:
