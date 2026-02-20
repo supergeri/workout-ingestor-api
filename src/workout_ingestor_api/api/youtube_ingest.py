@@ -39,16 +39,35 @@ Extract workout routines focusing on:
 2. Sets and reps (extract specific numbers when mentioned)
 3. Important form cues and technique notes
 4. Rest periods if mentioned
-5. Detecting CIRCUITS and ROUNDS — see rules below (check FIRST)
+5. Distinguishing STRENGTH from CIRCUIT via rest periods — see rules below (check FIRST)
 6. Detecting SUPERSETS — see rules below (check SECOND, only if not a circuit)
 7. Approximate timestamp in the video where each exercise is discussed
 
-CIRCUIT / ROUNDS DETECTION — CHECK THIS FIRST:
-A circuit or rounds-based workout is 3+ exercises done in sequence, repeated for N rounds. Detect when:
-- Text mentions "N rounds", "N rounds of", "repeat N times", "x N rounds"
-- Text lists 3 or more exercises to be done in order, then repeated
-- Workout styles like HYROX, CrossFit WODs, AMRAP, EMOM, For Time are almost always circuits, NOT supersets
-- If there are 3+ exercises and a round count, it is a CIRCUIT — never a superset
+STRENGTH vs CIRCUIT — THE KEY SIGNAL IS REST BETWEEN EXERCISES:
+The word "rounds" or "sets" does NOT automatically mean circuit. Use rest periods to decide:
+
+STRENGTH indicators (classify block as straight-sets or superset, workout_type = "strength"):
+- Exercises have explicit rest periods (60+ seconds between sets, e.g. "rest 2 min", "rest 90 seconds")
+- Heavy compound lifts: squat, bench press, deadlift, barbell/dumbbell rows, overhead press
+- "3 rounds of this superset" with rest = STRENGTH SUPERSET (not a circuit)
+- Each exercise is done for its full sets before moving on (or paired with one other exercise)
+
+CIRCUIT indicators (classify block as circuit, workout_type may be "circuit"):
+- Exercises performed BACK-TO-BACK with minimal rest (<30 seconds) between exercises
+- Rest only comes AFTER completing the full round of all exercises
+- Explicit circuit keywords: "circuit", "AMRAP", "EMOM", "For Time", "WOD"
+- Workout styles like HYROX, CrossFit WODs are almost always circuits
+
+CIRCUIT / ROUNDS DETECTION:
+Detect a CIRCUIT block when:
+- Text uses "circuit", "AMRAP", "EMOM", "For Time", or CrossFit/HYROX workout style
+- Exercises are performed consecutively with minimal rest between them
+- 3+ exercises done back-to-back per round WITH minimal inter-exercise rest
+
+NOT a circuit (even when "rounds" is mentioned):
+- "3 rounds of this superset" with 90s rest = STRENGTH SUPERSET
+- "4 sets of squats, rest 2 min, then bench press" = STRENGTH straight sets
+- Multiple strength exercises with explicit rest periods between each = STRENGTH
 
 When you detect a circuit:
 - Set structure to "circuit" (or "amrap"/"emom"/"for-time" if applicable)
@@ -113,13 +132,15 @@ STRUCTURE FOR SUPERSET BLOCKS (exactly 2 exercises paired):
 }
 NOTE: "exercises" is [] (empty) above. This is mandatory when structure is "superset".
 
-Workout Type Detection:
-- "strength": Weight training, bodybuilding, powerlifting (barbell/dumbbell with sets/reps)
-- "circuit": Timed circuits, rounds with minimal rest
-- "hiit": High-intensity intervals (work/rest, Tabata)
-- "cardio": Running, cycling, rowing focused
-- "follow_along": Video workouts to follow along
-- "mixed": Combination or unclear
+Workout Type Detection (applies to the entire workout session, not individual blocks):
+- "strength": Weight training, bodybuilding, powerlifting. Barbell/dumbbell exercises with rest periods between sets (60+ seconds). May use supersets or "rounds" language but has structured rest. Default for standard gym lifting workouts.
+- "circuit": Exercises performed back-to-back with minimal rest (<30s) between exercises, then rest after the full round. CrossFit WODs, HYROX, bodyweight circuits.
+- "hiit": High-intensity intervals with explicit timed work/rest periods (e.g. 40s on / 20s off, Tabata). Cardio or plyometric focus.
+- "cardio": Running, cycling, rowing, swimming focused. Steady-state or interval cardio.
+- "follow_along": Real-time video workouts to follow along with the trainer.
+- "mixed": Workout clearly combines both strength (with rest) AND circuit/cardio sections in the same session.
+
+IMPORTANT: If the workout has barbell or dumbbell exercises with rest periods between sets, classify as "strength" even if the trainer uses "rounds" language.
 
 Rules:
 - Only include actual exercises mentioned, not random sentences
@@ -127,7 +148,8 @@ Rules:
 - Use "strength" for weight exercises, "cardio" for running/cycling, "interval" for timed work
 - Include helpful notes from the transcript about form, tempo, or technique
 - Standardize exercise names
-- FIRST check for circuits/rounds (3+ exercises repeated) — these are NOT supersets
+- FIRST check rest periods — long rest = strength, no rest between exercises = circuit
+- THEN check for circuits/rounds (back-to-back exercises, minimal inter-exercise rest)
 - THEN check for supersets (exactly 2 exercises paired on same line)
 - For circuits: put ALL exercises in "exercises", set "rounds", leave "supersets" empty
 - For supersets: put ALL exercises in "supersets", leave "exercises" empty
@@ -217,7 +239,7 @@ Analyze this transcript and extract the workout routine being described. Focus o
 2. Sets and reps (extract specific numbers when mentioned)
 3. Important form cues and technique notes
 4. Rest periods if mentioned
-5. Detecting CIRCUITS and ROUNDS — see rules below (check FIRST)
+5. Distinguishing STRENGTH from CIRCUIT via rest periods — see rules below (check FIRST)
 6. Detecting SUPERSETS — see rules below (check SECOND, only if not a circuit)
 7. Approximate timestamp in the video where each exercise is discussed{duration_context}
 
@@ -226,12 +248,31 @@ Transcript from video titled "{title}":
 {transcript}
 ---
 
-CIRCUIT / ROUNDS DETECTION — CHECK THIS FIRST:
-A circuit or rounds-based workout is 3+ exercises done in sequence, repeated for N rounds. Detect when:
-- Text mentions "N rounds", "N rounds of", "repeat N times", "x N rounds"
-- Text lists 3 or more exercises to be done in order, then repeated
-- Workout styles like HYROX, CrossFit WODs, AMRAP, EMOM, For Time are almost always circuits, NOT supersets
-- If there are 3+ exercises and a round count, it is a CIRCUIT — never a superset
+STRENGTH vs CIRCUIT — THE KEY SIGNAL IS REST BETWEEN EXERCISES:
+The word "rounds" or "sets" does NOT automatically mean circuit. Use rest periods to decide:
+
+STRENGTH indicators (classify block as straight-sets or superset, workout_type = "strength"):
+- Exercises have explicit rest periods (60+ seconds between sets, e.g. "rest 2 min", "rest 90 seconds")
+- Heavy compound lifts: squat, bench press, deadlift, barbell/dumbbell rows, overhead press
+- "3 rounds of this superset" with rest = STRENGTH SUPERSET (not a circuit)
+- Each exercise is done for its full sets before moving on (or paired with one other exercise)
+
+CIRCUIT indicators (classify block as circuit, workout_type may be "circuit"):
+- Exercises performed BACK-TO-BACK with minimal rest (<30 seconds) between exercises
+- Rest only comes AFTER completing the full round of all exercises
+- Explicit circuit keywords: "circuit", "AMRAP", "EMOM", "For Time", "WOD"
+- Workout styles like HYROX, CrossFit WODs are almost always circuits
+
+CIRCUIT / ROUNDS DETECTION:
+Detect a CIRCUIT block when:
+- Text uses "circuit", "AMRAP", "EMOM", "For Time", or CrossFit/HYROX workout style
+- Exercises are performed consecutively with minimal rest between them (not long rest between each)
+- 3+ exercises done back-to-back per round WITH minimal inter-exercise rest
+
+NOT a circuit (even when "rounds" is mentioned):
+- "3 rounds of this superset" with 90s rest = STRENGTH SUPERSET
+- "4 sets of squats, rest 2 min, then bench press" = STRENGTH straight sets
+- Multiple strength exercises with explicit rest periods between each = STRENGTH
 
 When you detect a circuit:
 - Set structure to "circuit" (or "amrap"/"emom"/"for-time" if applicable)
@@ -326,13 +367,15 @@ Full response format:
   "blocks": [ ... ]
 }}
 
-Workout Type Detection:
-- "strength": Weight training, bodybuilding, powerlifting (barbell/dumbbell with sets/reps)
-- "circuit": Timed circuits, rounds with minimal rest
-- "hiit": High-intensity intervals (work/rest, Tabata)
-- "cardio": Running, cycling, rowing focused
-- "follow_along": Video workouts to follow along
-- "mixed": Combination or unclear
+Workout Type Detection (applies to the entire workout session, not individual blocks):
+- "strength": Weight training, bodybuilding, powerlifting. Barbell/dumbbell exercises with rest periods between sets (60+ seconds). May use supersets or "rounds" language but has structured rest. Default for standard gym lifting workouts.
+- "circuit": Exercises performed back-to-back with minimal rest (<30s) between exercises, then rest after the full round. CrossFit WODs, HYROX, bodyweight circuits, Tabata-style strength circuits.
+- "hiit": High-intensity intervals with explicit timed work/rest periods (e.g. 40s on / 20s off, Tabata). Cardio or plyometric focus.
+- "cardio": Running, cycling, rowing, swimming focused. Steady-state or interval cardio.
+- "follow_along": Real-time video workouts to follow along with the trainer.
+- "mixed": Workout clearly combines both strength (with rest) AND circuit/cardio sections in the same session.
+
+IMPORTANT: If the workout has barbell or dumbbell exercises with rest periods between sets, classify as "strength" even if the trainer uses "rounds" language.
 
 Set workout_type_confidence (0.0-1.0) based on clarity.
 
@@ -342,7 +385,8 @@ Rules:
 - Use "strength" for weight exercises, "cardio" for running/cycling, "interval" for timed work
 - Include helpful notes from the transcript about form, tempo, or technique
 - Standardize exercise names (e.g., "Beijing curl" should be normalized to a proper exercise name if it's a variation)
-- FIRST check for circuits/rounds (3+ exercises repeated) — these are NOT supersets
+- FIRST check rest periods — long rest = strength, no rest between exercises = circuit
+- THEN check for circuits/rounds (back-to-back exercises, minimal inter-exercise rest) — these are NOT supersets
 - THEN check for supersets (exactly 2 exercises paired on same line)
 - For circuits: put ALL exercises in "exercises", set "rounds", leave "supersets" empty
 - For supersets: put ALL exercises in "supersets", leave "exercises" empty
