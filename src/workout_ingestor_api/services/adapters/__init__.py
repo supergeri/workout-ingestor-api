@@ -38,3 +38,4 @@ __all__ = [
 # Auto-load adapters (triggers self-registration)
 from . import instagram_adapter  # noqa: F401
 from . import youtube_adapter  # noqa: F401
+from . import tiktok_adapter  # noqa: F401
