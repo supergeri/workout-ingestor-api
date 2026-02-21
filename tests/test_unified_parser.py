@@ -131,21 +131,6 @@ _LOW_CONFIDENCE_LLM_RESPONSE = json.dumps({
     ],
 })
 
-_NO_CONFIDENCE_LLM_RESPONSE = json.dumps({
-    "title": "Old Style Workout",
-    "workout_type": "strength",
-    "workout_type_confidence": 0.8,
-    "blocks": [
-        {
-            "label": "Main",
-            "structure": None,
-            "exercises": [{"name": "Deadlifts", "sets": 3, "reps": 5, "type": "strength"}],
-            "supersets": [],
-        }
-    ],
-})
-
-
 class TestUnifiedParserConfidenceOutput:
     # TODO(AMA-714): sanitizer resets structure=None without clearing structure_confidence; cover in workout_sanitizer tests
     """Parser passes through structure_confidence and structure_options from LLM."""
@@ -163,18 +148,21 @@ class TestUnifiedParserConfidenceOutput:
             assert block["structure_confidence"] == 1.0
             assert block["structure_options"] == []
 
-    def test_low_confidence_block_passes_through(self):
-        """When LLM returns low confidence, parser preserves options list."""
+    def test_low_confidence_block_upgraded_when_rounds_in_text(self):
+        """When LLM returns low confidence but raw text has explicit rounds,
+        the corrector upgrades confidence to 1.0 and clears structure_options."""
         mock_client = _mock_openai_client(_LOW_CONFIDENCE_LLM_RESPONSE)
         with patch(
             "workout_ingestor_api.services.unified_parser.AIClientFactory.create_openai_client",
             return_value=mock_client,
         ):
             parser = UnifiedParser()
+            # SAMPLE_MEDIA.primary_text = "4 rounds: Squats 20 reps, Push-ups 15 reps"
+            # The corrector detects "4 rounds" and upgrades confidence to 1.0.
             result = parser.parse(SAMPLE_MEDIA, platform="instagram")
             block = result["blocks"][0]
-            assert block["structure_confidence"] == 0.4
-            assert block["structure_options"] == ["circuit", "straight_sets"]
+            assert block["structure_confidence"] == 1.0
+            assert block["structure_options"] == []
 
     def test_missing_confidence_defaults_gracefully(self):
         """Block dict without confidence fields is accepted by the Block model with safe defaults."""
