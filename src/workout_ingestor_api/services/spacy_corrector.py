@@ -5,10 +5,7 @@ All corrections are regex-based — no spaCy model download required.
 from __future__ import annotations
 
 import re
-import logging
 from typing import Dict, List, Optional
-
-logger = logging.getLogger(__name__)
 
 _ROUNDS_PATTERN = re.compile(
     r"(?:x\s*(\d+)\s*rounds?|(\d+)\s*x?\s*rounds?|repeat\s*(\d+)\s*times?)",
@@ -25,7 +22,11 @@ _PER_SIDE_PATTERN = re.compile(
 
 
 class SpacyCorrector:
-    """Apply rule-based corrections to LLM workout output."""
+    """Apply rule-based corrections to LLM workout output.
+
+    Note: Named SpacyCorrector for historical reasons. Implementation is
+    pure regex — no spaCy model download required.
+    """
 
     def correct(self, workout_data: Dict, raw_text: str) -> Dict:
         """Correct workout_data using patterns found in raw_text.
@@ -46,10 +47,10 @@ class SpacyCorrector:
         has_per_side = bool(_PER_SIDE_PATTERN.search(raw_text))
 
         for block in blocks:
-            if rounds is not None and not block.get("rounds"):
+            if rounds is not None and block.get("rounds") is None:
                 block["rounds"] = rounds
 
-            if rest_sec is not None and not block.get("rest_between_rounds_sec"):
+            if rest_sec is not None and block.get("rest_between_rounds_sec") is None:
                 block["rest_between_rounds_sec"] = rest_sec
 
             if has_per_side:
@@ -59,13 +60,15 @@ class SpacyCorrector:
 
     @staticmethod
     def _extract_rounds(text: str) -> Optional[int]:
-        match = _ROUNDS_PATTERN.search(text)
-        if not match:
+        matches = _ROUNDS_PATTERN.findall(text)
+        values = set()
+        for groups in matches:
+            for g in groups:
+                if g:
+                    values.add(int(g))
+        if len(values) != 1:
             return None
-        for g in match.groups():
-            if g is not None:
-                return int(g)
-        return None
+        return values.pop()
 
     @staticmethod
     def _extract_rest_sec(text: str) -> Optional[int]:

@@ -50,3 +50,20 @@ def test_existing_rounds_not_overwritten(corrector):
     data = {"title": "Test", "blocks": [block]}
     result = corrector.correct(data, raw_text="3 rounds")
     assert result["blocks"][0]["rounds"] == 5
+
+def test_rounds_zero_not_overwritten(corrector):
+    """rounds=0 (AMRAP/open-ended) must not be overwritten."""
+    block = {"structure": "amrap", "rounds": 0, "exercises": [], "supersets": []}
+    data = {"title": "Test", "blocks": [block]}
+    result = corrector.correct(data, raw_text="3 rounds")
+    assert result["blocks"][0]["rounds"] == 0
+
+def test_multiple_distinct_round_counts_skipped(corrector):
+    """When text has two different round counts, do not apply either."""
+    data = {"title": "Test", "blocks": [
+        {"exercises": [], "supersets": []},
+        {"exercises": [], "supersets": []},
+    ]}
+    result = corrector.correct(data, raw_text="Block A: 4 rounds\nBlock B: 6 rounds")
+    assert result["blocks"][0].get("rounds") is None
+    assert result["blocks"][1].get("rounds") is None
