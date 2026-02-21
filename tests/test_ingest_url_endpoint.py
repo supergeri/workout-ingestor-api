@@ -1,3 +1,4 @@
+import uuid as _uuid
 from unittest.mock import patch, MagicMock
 import pytest
 from fastapi.testclient import TestClient
@@ -157,9 +158,6 @@ def test_ingest_url_parse_failure_returns_422(client):
 
         response = client.post("/ingest/url", json={"url": "https://www.instagram.com/reel/ABC123/"})
         assert response.status_code == 422
-
-
-import uuid as _uuid
 
 
 class TestIngestUrlBlockPortability:

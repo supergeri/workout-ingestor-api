@@ -43,7 +43,7 @@ class Superset(BaseModel):
 class Block(BaseModel):
     """
     Represents a block or section of a workout.
-    
+
     Structure types:
     - 'superset': 2 exercises back to back with no rest between, rest after the pair
     - 'circuit': Multiple exercises back to back with no rest between, rest after the circuit
@@ -55,6 +55,10 @@ class Block(BaseModel):
     - 'sets': Fixed number of sets with rest between
     - 'regular': Standard workout with rest between exercises
     """
+
+    class Config:
+        extra = "ignore"  # Ignore extra fields like 'supersets' from UI; declared fields (id, source, etc.) are accepted normally
+
     label: Optional[str] = None
 
     # Portability and confidence fields (AMA-714)
@@ -62,9 +66,6 @@ class Block(BaseModel):
     source: Optional[Dict[str, str]] = None  # {platform, source_id, source_url}
     structure_confidence: float = Field(default=1.0, ge=0.0, le=1.0)  # 0.0–1.0; <0.8 triggers app clarification
     structure_options: List[str] = Field(default_factory=list)  # LLM candidate structures
-
-    class Config:
-        extra = "ignore"  # Ignore extra fields like 'supersets' from UI; declared fields (id, source, etc.) are accepted normally
     structure: Optional[Literal[
         'superset',
         'circuit', 
