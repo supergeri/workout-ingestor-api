@@ -72,6 +72,13 @@ def test_multiple_distinct_round_counts_skipped(corrector):
 class TestSpacyCorrectorConfidenceUpgrade:
     """Corrector upgrades confidence when explicit round signal is found."""
 
+    # TODO(AMA-714-followup): workout_sanitizer.py can reset block["structure"] = None (superset
+    # with no valid supersets path) without clearing structure_confidence. The corrector then runs
+    # and may upgrade structure_confidence to 1.0 when a round signal is present, producing a
+    # block with structure=None, structure_confidence=1.0 — a high-confidence incoherent state.
+    # Fix: sanitizer should clear structure_confidence when resetting structure to None.
+    # See: workout_sanitizer.py line ~87 (block["structure"] = None path)
+
     def _corrector(self):
         from workout_ingestor_api.services.spacy_corrector import SpacyCorrector
         return SpacyCorrector()
@@ -124,6 +131,7 @@ class TestSpacyCorrectorConfidenceUpgrade:
         }
         result = corrector.correct(workout_data, raw_text="X4 Rounds: Squat")
         assert result["blocks"][0]["structure_confidence"] == 1.0
+        assert result["blocks"][0]["structure_options"] == []
 
     def test_confidence_upgrade_uses_get_with_default(self):
         """Blocks missing confidence field entirely are handled safely."""
@@ -142,3 +150,23 @@ class TestSpacyCorrectorConfidenceUpgrade:
         block = result["blocks"][0]
         # Should be upgraded to 1.0
         assert block.get("structure_confidence") == 1.0
+        assert block.get("structure_options") == []
+
+    def test_confidence_upgraded_when_rounds_already_set_by_llm(self):
+        """Even if LLM already set block.rounds, confidence is upgraded if raw text has a round signal."""
+        corrector = self._corrector()
+        workout_data = {
+            "blocks": [{
+                "label": "Block",
+                "structure": "circuit",
+                "rounds": 4,  # LLM already set this
+                "structure_confidence": 0.5,
+                "structure_options": ["circuit", "straight_sets"],
+                "exercises": [{"name": "Squat", "notes": None}],
+                "supersets": [],
+            }]
+        }
+        result = corrector.correct(workout_data, raw_text="4 rounds of squats")
+        block = result["blocks"][0]
+        assert block["structure_confidence"] == 1.0
+        assert block["structure_options"] == []
