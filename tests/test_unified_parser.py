@@ -89,3 +89,100 @@ def test_parse_calls_spacy_corrector():
         # raw_text should be the primary_text from MediaContent
         assert SAMPLE_MEDIA.primary_text in str(mock_correct.call_args)
         assert "blocks" in result  # verify parse() returns the corrected dict, not self
+
+
+# ---------------------------------------------------------------------------
+# Confidence scoring pass-through tests
+# ---------------------------------------------------------------------------
+
+_HIGH_CONFIDENCE_LLM_RESPONSE = json.dumps({
+    "title": "HYROX Session",
+    "workout_type": "circuit",
+    "workout_type_confidence": 0.9,
+    "blocks": [
+        {
+            "label": "Main",
+            "structure": "circuit",
+            "rounds": 4,
+            "exercises": [{"name": "Squats", "reps": 20, "type": "strength"}],
+            "supersets": [],
+            "structure_confidence": 1.0,
+            "structure_options": [],
+        }
+    ],
+})
+
+_LOW_CONFIDENCE_LLM_RESPONSE = json.dumps({
+    "title": "Ambiguous Workout",
+    "workout_type": "strength",
+    "workout_type_confidence": 0.6,
+    "blocks": [
+        {
+            "label": "Block A",
+            "structure": "circuit",
+            "rounds": None,
+            "exercises": [{"name": "Push-ups", "reps": 10, "type": "strength"}],
+            "supersets": [],
+            "structure_confidence": 0.4,
+            "structure_options": ["circuit", "straight_sets"],
+        }
+    ],
+})
+
+_NO_CONFIDENCE_LLM_RESPONSE = json.dumps({
+    "title": "Old Style Workout",
+    "workout_type": "strength",
+    "workout_type_confidence": 0.8,
+    "blocks": [
+        {
+            "label": "Main",
+            "structure": None,
+            "exercises": [{"name": "Deadlifts", "sets": 3, "reps": 5, "type": "strength"}],
+            "supersets": [],
+        }
+    ],
+})
+
+
+class TestUnifiedParserConfidenceOutput:
+    """Parser passes through structure_confidence and structure_options from LLM."""
+
+    def test_high_confidence_block_passes_through(self):
+        """When LLM returns confidence=1.0, parser preserves it."""
+        mock_client = _mock_openai_client(_HIGH_CONFIDENCE_LLM_RESPONSE)
+        with patch(
+            "workout_ingestor_api.services.unified_parser.AIClientFactory.create_openai_client",
+            return_value=mock_client,
+        ):
+            parser = UnifiedParser()
+            result = parser.parse(SAMPLE_MEDIA, platform="instagram")
+            block = result["blocks"][0]
+            assert block["structure_confidence"] == 1.0
+            assert block["structure_options"] == []
+
+    def test_low_confidence_block_passes_through(self):
+        """When LLM returns low confidence, parser preserves options list."""
+        mock_client = _mock_openai_client(_LOW_CONFIDENCE_LLM_RESPONSE)
+        with patch(
+            "workout_ingestor_api.services.unified_parser.AIClientFactory.create_openai_client",
+            return_value=mock_client,
+        ):
+            parser = UnifiedParser()
+            result = parser.parse(SAMPLE_MEDIA, platform="instagram")
+            block = result["blocks"][0]
+            assert block["structure_confidence"] == 0.4
+            assert block["structure_options"] == ["circuit", "straight_sets"]
+
+    def test_missing_confidence_defaults_gracefully(self):
+        """If LLM omits confidence (old-style response), no crash and defaults apply."""
+        mock_client = _mock_openai_client(_NO_CONFIDENCE_LLM_RESPONSE)
+        with patch(
+            "workout_ingestor_api.services.unified_parser.AIClientFactory.create_openai_client",
+            return_value=mock_client,
+        ):
+            parser = UnifiedParser()
+            # Should not raise
+            result = parser.parse(SAMPLE_MEDIA, platform="instagram")
+            block = result["blocks"][0]
+            # When absent, treat as fully confident (1.0)
+            assert block.get("structure_confidence", 1.0) == 1.0

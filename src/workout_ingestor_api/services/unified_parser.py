@@ -92,6 +92,22 @@ When you detect a circuit:
 - Use "distance_m" for distance-based exercises (e.g. 500m ski = distance_m: 500)
 - "supersets" MUST be [] (empty)
 
+CONFIDENCE SCORING — INCLUDE IN EVERY BLOCK:
+For each block, you MUST include two fields:
+- "structure_confidence": float 0.0-1.0 (how certain you are about the structure field)
+- "structure_options": list of strings (your top 2 candidate structures when confidence < 0.8, else [])
+
+Confidence rules:
+- 1.0: Text explicitly says "N rounds", "repeat N times", "AMRAP", "EMOM", "For Time", "Tabata", "HYROX", or similar unambiguous signal
+- 0.85-0.99: Exercise list with clear per-exercise sets/reps, no round/repeat signal (straight-set style)
+- 0.5-0.79: Exercises listed without clear round/repeat signal — structure is ambiguous
+- 0.3-0.49: Exercises listed with no sets/reps and no round signal — very ambiguous
+
+When confidence < 0.8, populate structure_options with your top 2 guesses:
+- Ambiguous between repeating vs independent: ["circuit", "straight_sets"]
+- Ambiguous between circuit and superset: ["circuit", "superset"]
+- When confident (≥ 0.8): structure_options must be []
+
 SUPERSET DETECTION — CHECK ONLY IF NOT A CIRCUIT:
 Supersets are EXACTLY 2 exercises paired back-to-back. Detect when:
 - Two exercises appear on the SAME LINE separated by "and", "&", "/", or "+"
@@ -110,6 +126,8 @@ STRUCTURE FOR CIRCUIT / ROUNDS BLOCKS (3+ exercises, repeated):
   "label": "HYROX Conditioning",
   "structure": "circuit",
   "rounds": 5,
+  "structure_confidence": 1.0,
+  "structure_options": [],
   "exercises": [
     {{
       "name": "Ski Erg",
@@ -150,6 +168,8 @@ STRUCTURE FOR NON-SUPERSET, NON-CIRCUIT BLOCKS (straight sets):
 {{
   "label": "Block Name",
   "structure": null,
+  "structure_confidence": 0.85,
+  "structure_options": [],
   "exercises": [
     {{
       "name": "Exercise Name",
@@ -172,6 +192,8 @@ STRUCTURE FOR SUPERSET BLOCKS (exactly 2 exercises paired):
 {{
   "label": "Strength Supersets",
   "structure": "superset",
+  "structure_confidence": 1.0,
+  "structure_options": [],
   "exercises": [],
   "supersets": [
     {{
@@ -190,7 +212,17 @@ Full response format:
   "workout_type": "strength | circuit | hiit | cardio | follow_along | mixed",
   "workout_type_confidence": 0.0-1.0,
   "video_duration_sec": {video_duration_sec if video_duration_sec else 'null'},
-  "blocks": [ ... ]
+  "blocks": [
+    {{
+      "label": "...",
+      "structure": "...",
+      "structure_confidence": 0.0-1.0,
+      "structure_options": [],
+      "rounds": null,
+      "exercises": [ ... ],
+      "supersets": []
+    }}
+  ]
 }}
 
 Rules:
