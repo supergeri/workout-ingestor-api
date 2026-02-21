@@ -213,8 +213,8 @@ Rules:
                 model="gpt-4o-mini",
                 messages=[
                     # Note: "from content" (not "from transcripts") is intentional — this parser
-            # handles multi-platform content including captions, descriptions, and audio transcripts.
-            {"role": "system", "content": "You are a fitness expert that extracts workout data from content. Return only valid JSON."},
+                    # handles multi-platform content including captions, descriptions, and audio transcripts.
+                    {"role": "system", "content": "You are a fitness expert that extracts workout data from content. Return only valid JSON."},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
