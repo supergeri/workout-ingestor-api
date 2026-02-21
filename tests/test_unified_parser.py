@@ -174,3 +174,112 @@ class TestUnifiedParserConfidenceOutput:
         block = Block(**block_dict)
         assert block.structure_confidence == 1.0
         assert block.structure_options == []
+
+
+# ---------------------------------------------------------------------------
+# AMA-720: reps_range and X4 rounds pass-through tests
+# ---------------------------------------------------------------------------
+
+_REPS_RANGE_LLM_RESPONSE = json.dumps({
+    "title": "Leg Day",
+    "workout_type": "strength",
+    "workout_type_confidence": 0.9,
+    "blocks": [
+        {
+            "label": "Main",
+            "structure": None,
+            "structure_confidence": 0.85,
+            "structure_options": [],
+            "rounds": None,
+            "exercises": [
+                {
+                    "name": "Bulgarian Split Squat",
+                    "sets": 3,
+                    "reps": None,
+                    "reps_range": "6-8 each leg",
+                    "type": "strength",
+                    "notes": "Keep torso upright",
+                },
+            ],
+            "supersets": [],
+        }
+    ],
+})
+
+_X4_ROUNDS_LLM_RESPONSE = json.dumps({
+    "title": "Conditioning Block",
+    "workout_type": "circuit",
+    "workout_type_confidence": 1.0,
+    "blocks": [
+        {
+            "label": "Circuit",
+            "structure": "circuit",
+            "structure_confidence": 1.0,
+            "structure_options": [],
+            "rounds": 4,
+            "exercises": [
+                {
+                    "name": "Box Jump",
+                    "sets": None,
+                    "reps": 10,
+                    "type": "strength",
+                },
+                {
+                    "name": "Burpees",
+                    "sets": None,
+                    "reps": 10,
+                    "type": "cardio",
+                },
+            ],
+            "supersets": [],
+        }
+    ],
+})
+
+
+class TestAMA720RepsRangeParsing:
+    """AMA-720: reps_range string and X4 rounds shorthand pass through without mangling."""
+
+    def test_reps_range_string_passes_through_unchanged(self):
+        """An exercise with reps_range='6-8 each leg' and reps=null must not be
+        collapsed to a numeric reps value — the range string must survive the full
+        parse pipeline."""
+        mock_client = _mock_openai_client(_REPS_RANGE_LLM_RESPONSE)
+        with patch(
+            "workout_ingestor_api.services.unified_parser.AIClientFactory.create_openai_client",
+            return_value=mock_client,
+        ):
+            parser = UnifiedParser()
+            result = parser.parse(SAMPLE_MEDIA, platform="instagram")
+            exercise = result["blocks"][0]["exercises"][0]
+            assert exercise["reps"] is None, (
+                f"Expected reps=null but got reps={exercise['reps']!r}. "
+                "The pipeline must not collapse reps_range into a numeric reps value."
+            )
+            assert exercise["reps_range"] == "6-8 each leg", (
+                f"Expected reps_range='6-8 each leg' but got {exercise['reps_range']!r}. "
+                "The range string must pass through unchanged."
+            )
+
+    def test_x4_rounds_block_passes_through_unchanged(self):
+        """A block with rounds=4 and exercises with sets=null must survive the
+        parse pipeline with rounds and sets intact — the X4 shorthand should be
+        interpreted as block-level rounds, not per-exercise sets."""
+        mock_client = _mock_openai_client(_X4_ROUNDS_LLM_RESPONSE)
+        with patch(
+            "workout_ingestor_api.services.unified_parser.AIClientFactory.create_openai_client",
+            return_value=mock_client,
+        ):
+            parser = UnifiedParser()
+            result = parser.parse(SAMPLE_MEDIA, platform="instagram")
+            block = result["blocks"][0]
+            assert block["rounds"] == 4, (
+                f"Expected rounds=4 but got {block['rounds']!r}. "
+                "X4 shorthand must map to block-level rounds, not be lost."
+            )
+            for ex in block["exercises"]:
+                assert ex.get("sets") is None, (
+                    f"Expected sets=null on circuit exercise '{ex['name']}' "
+                    f"but got sets={ex.get('sets')!r}. "
+                    "Circuit exercises must have sets=null; rounds handle repetition."
+                )

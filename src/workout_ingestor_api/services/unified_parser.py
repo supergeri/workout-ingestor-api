@@ -117,6 +117,12 @@ CRITICAL RULE — DO NOT VIOLATE:
 When structure is "superset", the "exercises" array MUST be empty []. ALL exercises go inside "supersets" only.
 NEVER put the same exercise in both "exercises" and "supersets". This is the #1 most common mistake.
 
+REPS PARSING RULES:
+- If reps are given as a specific number (e.g. "10 reps", "do 8"), set "reps" to that number and "reps_range" to null
+- If reps are given as a range (e.g. "6-8 reps", "8-12", "6-8 each leg", "6 to 8"), set "reps" to null and "reps_range" to the exact range string as written (e.g. "6-8 each leg")
+- Never guess a reps number — if unclear, set both "reps" and "reps_range" to null
+- "X4 Rounds", "x4", "x 4" shorthand means rounds: 4 on the block — not sets on exercises
+
 Return ONLY a valid JSON object.
 
 STRUCTURE FOR CIRCUIT / ROUNDS BLOCKS (3+ exercises, repeated):
@@ -172,8 +178,8 @@ STRUCTURE FOR NON-SUPERSET, NON-CIRCUIT BLOCKS (straight sets):
     {{
       "name": "Exercise Name",
       "sets": 3,
-      "reps": 10,
-      "reps_range": null,
+      "reps": null,
+      "reps_range": "6-8",
       "duration_sec": null,
       "rest_sec": null,
       "distance_m": null,
