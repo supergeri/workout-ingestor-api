@@ -236,6 +236,19 @@ class TestIngestUrlBlockPortability:
         assert response.status_code == 200
         assert response.json()["needs_clarification"] is True
 
+    def test_needs_clarification_threshold_boundary(self, client):
+        """Exactly 0.8 is confident (< 0.8 is the trigger); 0.79 is not."""
+        data = self._make_workout_data()
+        data["blocks"][0]["structure_confidence"] = 0.8
+        response = self._post_ingest(client, data)
+        assert response.status_code == 200
+        assert response.json()["needs_clarification"] is False
+
+        data["blocks"][0]["structure_confidence"] = 0.79
+        response = self._post_ingest(client, data)
+        assert response.status_code == 200
+        assert response.json()["needs_clarification"] is True
+
     def test_existing_block_id_is_preserved(self, client):
         fixed_id = str(_uuid.uuid4())
         data = self._make_workout_data()
