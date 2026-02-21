@@ -1,9 +1,12 @@
 """Data models for workout ingestion."""
+import uuid
 from pydantic import BaseModel, Field, computed_field
-from typing import List, Optional, Literal
+from typing import Dict, List, Optional, Literal
 
 # AMA-213: Workout type detection
 WorkoutType = Literal['strength', 'circuit', 'hiit', 'cardio', 'follow_along', 'mixed']
+
+STRUCTURE_CONFIDENCE_THRESHOLD = 0.8
 
 
 class Exercise(BaseModel):
@@ -53,7 +56,13 @@ class Block(BaseModel):
     - 'regular': Standard workout with rest between exercises
     """
     label: Optional[str] = None
-    
+
+    # Portability and confidence fields (AMA-714)
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    source: Optional[Dict[str, str]] = None  # {platform, source_id, source_url}
+    structure_confidence: float = 1.0  # 0.0–1.0; <0.8 triggers app clarification
+    structure_options: List[str] = Field(default_factory=list)  # LLM candidate structures
+
     class Config:
         extra = "ignore"  # Ignore extra fields like 'id', 'supersets' from UI
     structure: Optional[Literal[
@@ -97,6 +106,7 @@ class Workout(BaseModel):
     # AMA-213: Workout type detection
     workout_type: Optional[WorkoutType] = None
     workout_type_confidence: Optional[float] = None
+    needs_clarification: bool = False  # True if any block has structure_confidence < threshold
 
     class Config:
         extra = "ignore"  # Ignore extra fields from UI
