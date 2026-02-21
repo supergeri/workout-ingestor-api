@@ -46,3 +46,16 @@ def test_save_calls_insert():
         UnifiedCacheService.save("abc123", "instagram", SAMPLE_WORKOUT)
         mock_client.table.assert_called_once_with("video_workout_cache")
         mock_client.table.return_value.insert.assert_called_once()
+        # Assert the payload content
+        call_args = mock_client.table.return_value.insert.call_args
+        payload = call_args[0][0]
+        assert payload["video_id"] == "abc123"
+        assert payload["platform"] == "instagram"
+        assert payload["workout_data"] == SAMPLE_WORKOUT
+        assert "ingested_at" in payload
+
+
+def test_save_returns_false_when_supabase_unavailable():
+    with patch("workout_ingestor_api.services.unified_cache_service._get_supabase_client", return_value=None):
+        result = UnifiedCacheService.save("abc123", "instagram", SAMPLE_WORKOUT)
+        assert result is False

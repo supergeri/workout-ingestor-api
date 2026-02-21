@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -12,20 +11,9 @@ _TABLE = "video_workout_cache"
 
 
 def _get_supabase_client():
-    """Return Supabase client or None if not configured."""
-    try:
-        from supabase import create_client
-    except ImportError:
-        return None
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
-    if not url or not key:
-        return None
-    try:
-        return create_client(url, key)
-    except Exception as e:
-        logger.error("Failed to create Supabase client: %s", e)
-        return None
+    """Get Supabase client (reuses youtube_cache_service pattern)."""
+    from workout_ingestor_api.services.youtube_cache_service import get_supabase_client
+    return get_supabase_client()
 
 
 class UnifiedCacheService:
@@ -46,22 +34,25 @@ class UnifiedCacheService:
                 .single()
                 .execute()
             )
-            if result.data:
+            workout_data = result.data.get("workout_data") if result.data else None
+            if workout_data is not None:
                 logger.info("Cache HIT: %s/%s", platform, video_id)
-                return result.data["workout_data"]
+                return workout_data
+            logger.debug("Cache MISS: %s/%s", platform, video_id)
             return None
         except Exception as e:
-            if "no rows" in str(e).lower():
+            if "no rows" in str(e).lower() or "0 rows" in str(e).lower():
+                logger.debug("Cache MISS: %s/%s", platform, video_id)
                 return None
             logger.error("Cache read error for %s/%s: %s", platform, video_id, e)
             return None
 
     @staticmethod
-    def save(video_id: str, platform: str, workout_data: Dict[str, Any]) -> None:
-        """Insert into cache, silently ignore duplicates."""
+    def save(video_id: str, platform: str, workout_data: Dict[str, Any]) -> bool:
+        """Insert or ignore duplicate into the cache. Returns True on success."""
         client = _get_supabase_client()
         if not client:
-            return
+            return False
         try:
             client.table(_TABLE).insert({
                 "video_id": video_id,
@@ -69,8 +60,11 @@ class UnifiedCacheService:
                 "workout_data": workout_data,
                 "ingested_at": datetime.now(timezone.utc).isoformat(),
             }).execute()
+            return True
         except Exception as e:
             if "duplicate" in str(e).lower() or "unique" in str(e).lower():
                 logger.debug("Already cached: %s/%s", platform, video_id)
+                return True  # Already exists = success
             else:
                 logger.error("Cache save error for %s/%s: %s", platform, video_id, e)
+                return False
