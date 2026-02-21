@@ -39,3 +39,4 @@ __all__ = [
 from . import instagram_adapter  # noqa: F401
 from . import youtube_adapter  # noqa: F401
 from . import tiktok_adapter  # noqa: F401
+from . import pinterest_adapter  # noqa: F401
