@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
 from workout_ingestor_api.ai import AIClientFactory, AIRequestContext, retry_sync_call
 from workout_ingestor_api.services.adapters.base import MediaContent
@@ -11,6 +11,8 @@ from workout_ingestor_api.services.workout_sanitizer import sanitize_workout_dat
 from workout_ingestor_api.services.spacy_corrector import SpacyCorrector
 
 logger = logging.getLogger(__name__)
+
+_corrector = SpacyCorrector()
 
 
 class UnifiedParserError(RuntimeError):
@@ -24,8 +26,8 @@ class UnifiedParser:
         self,
         media: MediaContent,
         platform: str,
-        user_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
         """Run the full parse pipeline: LLM → sanitize → SpacyCorrector.
 
         Args:
@@ -206,11 +208,13 @@ Rules:
 - For video_start_sec/video_end_sec: estimate when each exercise is discussed
 - Return ONLY JSON, no markdown, no code blocks"""
 
-        def _call() -> Dict:
+        def _call() -> dict:
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are a fitness expert that extracts workout data from content. Return only valid JSON."},
+                    # Note: "from content" (not "from transcripts") is intentional — this parser
+            # handles multi-platform content including captions, descriptions, and audio transcripts.
+            {"role": "system", "content": "You are a fitness expert that extracts workout data from content. Return only valid JSON."},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
@@ -223,7 +227,13 @@ Rules:
             except json.JSONDecodeError as exc:
                 raise UnifiedParserError(f"LLM returned invalid JSON: {exc}") from exc
 
-        workout_data = retry_sync_call(_call)
+        # wrap in try/except to honour the public exception contract
+        try:
+            workout_data = retry_sync_call(_call)
+        except UnifiedParserError:
+            raise  # Already the right type — re-raise without wrapping
+        except Exception as exc:
+            raise UnifiedParserError(f"LLM call failed: {exc}") from exc
         workout_data = sanitize_workout_data(workout_data)
-        workout_data = SpacyCorrector().correct(workout_data, raw_text=media.primary_text)
+        workout_data = _corrector.correct(workout_data, raw_text=media.primary_text)
         return workout_data

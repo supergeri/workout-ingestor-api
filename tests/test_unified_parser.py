@@ -53,6 +53,8 @@ def test_parse_raises_on_invalid_json():
         parser = UnifiedParser()
         with pytest.raises(UnifiedParserError, match="invalid JSON"):
             parser.parse(SAMPLE_MEDIA, platform="instagram")
+        # Assert no spurious retries on bad JSON — should fail fast
+        assert mock_client.chat.completions.create.call_count == 1
 
 
 def test_parse_feature_name_contains_platform():
@@ -81,8 +83,9 @@ def test_parse_calls_spacy_corrector():
         wraps=lambda data, raw_text: data,
     ) as mock_correct:
         parser = UnifiedParser()
-        parser.parse(SAMPLE_MEDIA, platform="instagram")
+        result = parser.parse(SAMPLE_MEDIA, platform="instagram")
         mock_correct.assert_called_once()
         _, kwargs = mock_correct.call_args
         # raw_text should be the primary_text from MediaContent
         assert SAMPLE_MEDIA.primary_text in str(mock_correct.call_args)
+        assert "blocks" in result  # verify parse() returns the corrected dict, not self
