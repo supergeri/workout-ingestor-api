@@ -93,20 +93,18 @@ When you detect a circuit:
 - "supersets" MUST be [] (empty)
 
 CONFIDENCE SCORING — INCLUDE IN EVERY BLOCK:
-For each block, you MUST include two fields:
-- "structure_confidence": float 0.0-1.0 (how certain you are about the structure field)
-- "structure_options": list of strings (your top 2 candidate structures when confidence < 0.8, else [])
+- "structure_confidence": float 0.0–1.0 — your confidence in the "structure" field
+- "structure_options": list[str] — required when structure_confidence < 0.8; list the plausible alternatives (e.g. ["circuit", "straight_sets"]); empty list [] when confidence >= 0.8
 
-Confidence rules:
-- 1.0: Text explicitly says "N rounds", "repeat N times", "AMRAP", "EMOM", "For Time", "Tabata", "HYROX", or similar unambiguous signal
-- 0.85-0.99: Exercise list with clear per-exercise sets/reps, no round/repeat signal (straight-set style)
-- 0.5-0.79: Exercises listed without clear round/repeat signal — structure is ambiguous
-- 0.3-0.49: Exercises listed with no sets/reps and no round signal — very ambiguous
+Confidence scale:
+- 1.0   : unambiguous keyword signal ("AMRAP", "EMOM", "For Time", "Tabata", "3 rounds", "repeat N times", explicit round count like "x4")
+- 0.85–0.99: exercises with explicit sets and reps but no grouping/round signal — clearly straight sets
+- 0.8   : moderately confident — use for borderline cases where structure is likely correct but not certain
+- 0.5–0.79: ambiguous — two structures are plausible (e.g. could be circuit or superset; set structure_options accordingly)
+- 0.3–0.49: very ambiguous — exercises listed with no sets, no reps, and no round/repeat signal
+- 0.0–0.29: reserved for extreme ambiguity; use sparingly
 
-When confidence < 0.8, populate structure_options with your top 2 guesses:
-- Ambiguous between repeating vs independent: ["circuit", "straight_sets"]
-- Ambiguous between circuit and superset: ["circuit", "superset"]
-- When confident (≥ 0.8): structure_options must be []
+When structure_confidence < 0.8, you MUST populate structure_options with the plausible alternative structure values.
 
 SUPERSET DETECTION — CHECK ONLY IF NOT A CIRCUIT:
 Supersets are EXACTLY 2 exercises paired back-to-back. Detect when:
