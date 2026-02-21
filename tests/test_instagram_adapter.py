@@ -32,6 +32,7 @@ def test_fetch_uses_transcript_when_available():
         result = InstagramAdapter().fetch("https://instagram.com/reel/DEaDjHLtHwA/", "DEaDjHLtHwA")
         assert isinstance(result, MediaContent)
         assert result.primary_text == "Today we do four rounds of squats"
+        assert result.secondary_texts == ["X4 Rounds\nSquat 3x10\n#hyrox"]
 
 
 def test_fetch_falls_back_to_caption_when_no_transcript():
@@ -49,7 +50,7 @@ def test_fetch_raises_when_no_text():
         "workout_ingestor_api.services.adapters.instagram_adapter.ApifyService.fetch_reel_data",
         return_value=empty,
     ):
-        with pytest.raises(PlatformFetchError):
+        with pytest.raises(PlatformFetchError, match="no transcript or caption"):
             InstagramAdapter().fetch("https://instagram.com/p/abc/", "abc")
 
 
@@ -70,3 +71,21 @@ def test_media_metadata_populated():
         result = InstagramAdapter().fetch("https://instagram.com/p/DEaDjHLtHwA/", "DEaDjHLtHwA")
         assert result.media_metadata["creator"] == "commando_charlie"
         assert result.media_metadata["video_duration_sec"] == 14.7
+
+
+def test_secondary_texts_empty_when_caption_is_whitespace_only():
+    data = {
+        "caption": "   ",  # whitespace-only
+        "transcript": "Today we do four rounds of squats",
+        "videoDuration": 30.0,
+        "ownerUsername": "coach_anna",
+        "shortCode": "DEaDjHLtHwA",
+    }
+    with patch(
+        "workout_ingestor_api.services.adapters.instagram_adapter.ApifyService.fetch_reel_data",
+        return_value=data,
+    ):
+        adapter = InstagramAdapter()
+        result = adapter.fetch("https://instagram.com/reel/DEaDjHLtHwA/", "DEaDjHLtHwA")
+        assert result.primary_text == "Today we do four rounds of squats"
+        assert result.secondary_texts == []

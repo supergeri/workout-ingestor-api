@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from workout_ingestor_api.services.apify_service import ApifyService
 from .base import PlatformAdapter, MediaContent, PlatformFetchError
@@ -26,7 +25,7 @@ class InstagramAdapter(PlatformAdapter):
 
         caption: str = reel.get("caption") or ""
         transcript: str = reel.get("transcript") or ""
-        duration: Optional[float] = reel.get("videoDuration")
+        duration: float | None = reel.get("videoDuration")
         creator: str = reel.get("ownerUsername", "unknown")
 
         primary_text = transcript.strip() if transcript.strip() else caption.strip()
@@ -37,7 +36,7 @@ class InstagramAdapter(PlatformAdapter):
 
         return MediaContent(
             primary_text=primary_text,
-            secondary_texts=[caption] if transcript.strip() and caption else [],
+            secondary_texts=[caption.strip()] if transcript.strip() and caption.strip() else [],
             title=title,
             media_metadata={
                 "video_duration_sec": duration,
