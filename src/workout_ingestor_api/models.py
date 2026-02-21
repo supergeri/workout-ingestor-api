@@ -60,11 +60,11 @@ class Block(BaseModel):
     # Portability and confidence fields (AMA-714)
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     source: Optional[Dict[str, str]] = None  # {platform, source_id, source_url}
-    structure_confidence: float = 1.0  # 0.0–1.0; <0.8 triggers app clarification
+    structure_confidence: float = Field(default=1.0, ge=0.0, le=1.0)  # 0.0–1.0; <0.8 triggers app clarification
     structure_options: List[str] = Field(default_factory=list)  # LLM candidate structures
 
     class Config:
-        extra = "ignore"  # Ignore extra fields like 'id', 'supersets' from UI
+        extra = "ignore"  # Ignore extra fields like 'supersets' from UI; declared fields (id, source, etc.) are accepted normally
     structure: Optional[Literal[
         'superset',
         'circuit', 
@@ -165,6 +165,10 @@ class Workout(BaseModel):
             # Create new block with converted structure
             converted_block = Block(
                 label=block.label,
+                id=block.id,                                      # preserve identity
+                source=block.source,                               # preserve provenance
+                structure_confidence=block.structure_confidence,   # preserve confidence
+                structure_options=block.structure_options,         # preserve options
                 structure=structure,
                 exercises=exercises,
                 rounds=block.rounds,
@@ -187,4 +191,5 @@ class Workout(BaseModel):
             # AMA-213: Preserve workout type detection
             workout_type=self.workout_type,
             workout_type_confidence=self.workout_type_confidence,
+            needs_clarification=self.needs_clarification,
         )

@@ -1,3 +1,5 @@
+import uuid as _uuid
+
 import pytest
 from pydantic import ValidationError
 
@@ -120,9 +122,6 @@ class TestWorkoutComputedFields:
         assert [e.name for e in converted.exercises] == ["A", "B", "C"]
 
 
-import uuid as _uuid
-
-
 class TestBlockPortabilityFields:
     def test_block_gets_uuid_id_by_default(self):
         block = Block(label="Test")
@@ -178,3 +177,27 @@ class TestBlockPortabilityFields:
     def test_structure_confidence_threshold_constant_exists(self):
         from workout_ingestor_api.models import STRUCTURE_CONFIDENCE_THRESHOLD
         assert 0.0 < STRUCTURE_CONFIDENCE_THRESHOLD < 1.0
+
+    def test_convert_to_new_structure_preserves_portability_fields(self):
+        """convert_to_new_structure must not drop id, source, or confidence fields."""
+        fixed_id = str(_uuid.uuid4())
+        src = {"platform": "instagram", "source_id": "abc", "source_url": "https://..."}
+        workout = Workout(
+            title="Test",
+            needs_clarification=True,
+            blocks=[Block(
+                label="Block",
+                id=fixed_id,
+                source=src,
+                structure_confidence=0.4,
+                structure_options=["circuit", "straight_sets"],
+                exercises=[],
+            )]
+        )
+        converted = workout.convert_to_new_structure()
+        block = converted.blocks[0]
+        assert block.id == fixed_id
+        assert block.source == src
+        assert block.structure_confidence == 0.4
+        assert block.structure_options == ["circuit", "straight_sets"]
+        assert converted.needs_clarification is True
