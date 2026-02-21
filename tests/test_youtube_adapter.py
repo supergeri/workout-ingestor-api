@@ -66,11 +66,9 @@ class TestYouTubeAdapterFetch:
 
     def _run_fetch(self, metadata_return: dict) -> "MediaContent":  # noqa: F821
         with patch(
-            "workout_ingestor_api.services.adapters.youtube_adapter.YouTubeService"
-        ) as mock_service_cls:
-            mock_service = MagicMock()
-            mock_service_cls.return_value = mock_service
-            mock_service.extract_metadata.return_value = metadata_return
+            "workout_ingestor_api.services.adapters.youtube_adapter.YouTubeService.extract_metadata",
+            return_value=metadata_return,
+        ):
             adapter = YouTubeAdapter()
             return adapter.fetch("https://youtube.com/watch?v=abc123", "abc123")
 
@@ -118,11 +116,9 @@ class TestYouTubeAdapterFetch:
     # ------------------------------------------------------------------
     def test_fetch_raises_on_service_failure(self):
         with patch(
-            "workout_ingestor_api.services.adapters.youtube_adapter.YouTubeService"
-        ) as mock_service_cls:
-            mock_service = MagicMock()
-            mock_service_cls.return_value = mock_service
-            mock_service.extract_metadata.side_effect = RuntimeError("yt-dlp exploded")
+            "workout_ingestor_api.services.adapters.youtube_adapter.YouTubeService.extract_metadata",
+            side_effect=RuntimeError("yt-dlp exploded"),
+        ):
             adapter = YouTubeAdapter()
             with pytest.raises(PlatformFetchError, match="YouTube fetch failed"):
                 adapter.fetch("https://youtube.com/watch?v=xyz", "xyz")

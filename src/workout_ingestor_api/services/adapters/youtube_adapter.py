@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import re
 
 from workout_ingestor_api.services.youtube_service import YouTubeService
 from .base import PlatformAdapter, MediaContent, PlatformFetchError
@@ -23,7 +23,7 @@ def _extract_transcript_from_captions(captions: dict) -> str:
 
     # Prefer explicit English tracks; fall back to the first available track.
     preferred = ["en", "en-US", "en-GB"]
-    lang_key: Optional[str] = None
+    lang_key: str | None = None
     for lang in preferred:
         if lang in captions:
             lang_key = lang
@@ -48,7 +48,6 @@ def _extract_transcript_from_captions(captions: dict) -> str:
 
 def _parse_srt_to_text(srt: str) -> str:
     """Extract plain text lines from SRT subtitle data."""
-    import re
     # Strip sequence numbers and timestamps; keep text lines only.
     lines = []
     for line in srt.splitlines():
@@ -84,8 +83,7 @@ class YouTubeAdapter(PlatformAdapter):
 
     def fetch(self, url: str, source_id: str) -> MediaContent:
         try:
-            service = YouTubeService()
-            data = service.extract_metadata(url)
+            data = YouTubeService.extract_metadata(url)
         except Exception as e:
             raise PlatformFetchError(
                 f"YouTube fetch failed for {source_id}: {e}"
