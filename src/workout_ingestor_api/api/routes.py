@@ -63,8 +63,6 @@ import workout_ingestor_api.services.adapters as _adapters_module
 from workout_ingestor_api.services.adapters.base import PlatformFetchError, MediaContent
 import workout_ingestor_api.services.unified_cache_service as _unified_cache_module
 import workout_ingestor_api.services.unified_parser as _unified_parser_module
-from workout_ingestor_api.services.unified_cache_service import UnifiedCacheService
-from workout_ingestor_api.services.unified_parser import UnifiedParser, UnifiedParserError
 # ---------------------------------------------------------------------------
 # Build / git metadata
 # ---------------------------------------------------------------------------
@@ -637,7 +635,7 @@ def ingest_url(
     except KeyError:
         raise HTTPException(status_code=400, detail=f"No adapter registered for platform: {routing.platform}")
 
-    if not media.primary_text.strip():
+    if not (media.primary_text or "").strip():
         raise HTTPException(
             status_code=400,
             detail="No extractable text found (no transcript or caption)",
@@ -651,20 +649,19 @@ def ingest_url(
     except _unified_parser_module.UnifiedParserError as e:
         raise HTTPException(status_code=422, detail=f"Failed to extract workout: {e}")
 
-    # 5. Provenance
-    workout_data.setdefault("_provenance", {})
-    workout_data["_provenance"].update({
+    # 5. Cache save (before building response)
+    _unified_cache_module.UnifiedCacheService.save(routing.source_id, routing.platform, workout_data)
+
+    # 6. Validate with Pydantic, then add provenance to the response dict
+    response_dict = Workout(**workout_data).model_dump()
+    response_dict.setdefault("_provenance", {})
+    response_dict["_provenance"].update({
         "mode": routing.platform,
-        "source_url": body.url,
+        "source_url": str(body.url),
         "source_id": routing.source_id,
         "platform": routing.platform,
     })
-
-    # 6. Cache save
-    _unified_cache_module.UnifiedCacheService.save(routing.source_id, routing.platform, workout_data)
-
-    # 7. Validate and return
-    return Workout(**workout_data).model_dump()
+    return response_dict
 
 
 # ---------------------------------------------------------------------------
