@@ -34,3 +34,6 @@ __all__ = [
     "MediaContent",
     "PlatformFetchError",
 ]
+
+# Auto-load adapters (triggers self-registration)
+from . import instagram_adapter  # noqa: F401
