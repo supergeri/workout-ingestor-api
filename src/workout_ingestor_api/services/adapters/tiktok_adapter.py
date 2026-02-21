@@ -21,14 +21,12 @@ class TikTokAdapter(PlatformAdapter):
             raise PlatformFetchError(f"TikTok fetch failed for {source_id}: {e}") from e
 
         # TikTok oEmbed provides no transcript — description is the creator's caption
-        transcript = None  # TikTok API does not provide transcripts
         description = metadata.title.strip() if metadata.title else ""
-
-        primary_text = transcript if transcript else description
+        primary_text = description
         if not primary_text:
             raise PlatformFetchError(f"No text found for TikTok video {source_id}")
 
-        title = (metadata.title or f"TikTok by @{metadata.author_name}")[:80]
+        title = ((metadata.title or "").strip() or f"TikTok by @{metadata.author_name}")[:80]
 
         return MediaContent(
             primary_text=primary_text,
