@@ -103,6 +103,28 @@ When you detect a circuit:
 - Use "calories" for calorie-target exercises (e.g. "16 cal row" = calories: 16)
 - "supersets" MUST be [] (empty)
 
+TIMED STATION FORMAT — CHECK AFTER CIRCUIT/Rounds AND BEFORE SUPERSET:
+When the workout uses a timed-station format with "X minute window" or timestamp ranges (e.g. "In a 5 minute window complete:" or "0-5: 1000m Ski"):
+- Set "rounds" to 1 (one pass through all stations)
+- Set "time_cap_sec" on the block to the window duration in seconds (e.g. "5 minute window" = 300 seconds, "10 minute window" = 600 seconds)
+- Each line starts with "MM-MM:" which is a MINUTE timestamp range (e.g. "0-5:" means minutes 0-5) — NEVER use this as reps, sets, or rounds
+- Extract the actual exercise metrics from the text AFTER the colon only
+
+Example: "In a 5 minute window complete: 0-5: 1000m Ski, 5-10: 500m Run"
+{{
+  "label": "5 Minute Window",
+  "structure": "circuit",
+  "rounds": 1,
+  "time_cap_sec": 300,
+  "structure_confidence": 1.0,
+  "structure_options": [],
+  "exercises": [
+    {{"name": "Ski", "distance_m": 1000, "type": "cardio"}},
+    {{"name": "Run", "distance_m": 500, "type": "cardio"}}
+  ],
+  "supersets": []
+}}
+
 CONFIDENCE SCORING — INCLUDE IN EVERY BLOCK:
 - "structure_confidence": float 0.0–1.0 — your confidence in the "structure" field
 - "structure_options": list[str] — required when structure_confidence < 0.8; empty list [] when confidence >= 0.8

@@ -94,3 +94,17 @@ def test_parse_transcript_prompt_includes_mm_mm_timestamp_guidance():
     assert "minute-range timestamp" in source, "Prompt should describe MM-MM as minute-range timestamp"
     assert "35-40: 100 wall balls" in source, "Prompt should contain example of wall balls with MM-MM format"
     assert "distance_m: 1000" in source, "Prompt should contain example for distance extraction"
+
+
+def test_parse_transcript_prompt_includes_timed_station_format():
+    """Prompt should include TIMED STATION FORMAT section for 'X minute window' captions."""
+    import inspect
+
+    # Get the source code of the _parse_transcript method
+    source = inspect.getsource(InstagramReelService._parse_transcript)
+
+    # Verify the prompt contains TIMED STATION FORMAT section
+    assert "TIMED STATION FORMAT" in source, "Prompt should contain TIMED STATION FORMAT section"
+    assert "time_cap_sec" in source, "Prompt should contain time_cap_sec guidance for timed stations"
+    assert "rounds" in source and "1" in source, "Prompt should contain rounds=1 guidance for timed stations"
+    assert "minute window" in source.lower(), "Prompt should mention 'minute window' in timed station format"
