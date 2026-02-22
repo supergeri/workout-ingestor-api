@@ -103,6 +103,12 @@ When you detect a circuit:
 - Use "calories" for calorie-target exercises (e.g. "16 cal row" = calories: 16)
 - "supersets" MUST be [] (empty)
 
+STRAIGHT SETS vs CIRCUIT — KEY DISTINCTION:
+- STRAIGHT SETS (structure: null): Each exercise has its own independent set count. The athlete completes all sets of one exercise before moving to the next. Do NOT classify as circuit.
+- CIRCUIT (structure: "circuit"): ALL exercises are performed back-to-back in sequence, then the ENTIRE group repeats for N rounds. Requires EXPLICIT "rounds" language applied to the group.
+- Individual per-exercise set counts (sets: 3) are NOT circuit rounds.
+- Only set structure: "circuit" when explicit "rounds" language applies to the whole group of exercises together.
+
 TIMED STATION FORMAT — CHECK AFTER CIRCUIT/Rounds AND BEFORE SUPERSET:
 When the workout uses a timed-station format with "X minute window" or timestamp ranges (e.g. "In a 5 minute window complete:" or "0-5: 1000m Ski"):
 - Set "rounds" to 1 (one pass through all stations)
@@ -124,6 +130,7 @@ Example: "In a 5 minute window complete: 0-5: 1000m Ski, 5-10: 500m Run"
   ],
   "supersets": []
 }}
+=======
 
 CONFIDENCE SCORING — INCLUDE IN EVERY BLOCK:
 - "structure_confidence": float 0.0–1.0 — your confidence in the "structure" field
