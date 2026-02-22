@@ -108,3 +108,16 @@ def test_parse_transcript_prompt_includes_timed_station_format():
     assert "time_cap_sec" in source, "Prompt should contain time_cap_sec guidance for timed stations"
     assert "rounds" in source and "1" in source, "Prompt should contain rounds=1 guidance for timed stations"
     assert "minute window" in source.lower(), "Prompt should mention 'minute window' in timed station format"
+
+
+def test_parse_transcript_prompt_includes_notes_for_timed_station_format():
+    """Prompt should include NOTES FOR TIMED STATION FORMAT section to set exercise notes to 'X minute cap'."""
+    import inspect
+
+    # Get the source code of the _parse_transcript method
+    source = inspect.getsource(InstagramReelService._parse_transcript)
+
+    # Verify the prompt contains NOTES FOR TIMED STATION FORMAT section
+    assert "NOTES FOR TIMED STATION FORMAT" in source, "Prompt should contain NOTES FOR TIMED STATION FORMAT section"
+    assert "minute cap" in source, "Prompt should mention 'minute cap' for timed station notes"
+    assert "Do NOT use" in source and "Complete as fast as possible" in source, "Prompt should instruct not to use 'Complete as fast as possible' for timed stations"
