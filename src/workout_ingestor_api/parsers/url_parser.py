@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from urllib.parse import urlparse, parse_qs
 import httpx
 
+from workout_ingestor_api.services.instagram_service import InstagramService
+
 logger = logging.getLogger(__name__)
 
 # Workout ingestor API URL
@@ -225,16 +227,29 @@ class URLParser:
         """
         Fetch Instagram metadata.
 
-        Instagram doesn't have a public oEmbed API, so we return basic info
-        and let the full ingestion handle the details.
+        Instagram doesn't have a public oEmbed API, so we scrape the page
+        to get the thumbnail and other metadata.
         """
-        # Instagram oEmbed requires authentication, so we just return what we know
+        # Try to get images from Instagram using the service
+        thumbnail_url = None
+        try:
+            # Extract shortcode from URL
+            shortcode = InstagramService._extract_shortcode(url)
+            # Get image URLs using GraphQL
+            image_urls = InstagramService._get_images_from_graphql(shortcode)
+            if image_urls and len(image_urls) > 0:
+                # Use the first (highest quality) image as thumbnail
+                thumbnail_url = image_urls[0]
+                logger.info(f"Found Instagram thumbnail for {shortcode}: {thumbnail_url[:100]}...")
+        except Exception as e:
+            logger.warning(f"Failed to fetch Instagram thumbnail for {url}: {e}")
+
         return URLMetadata(
             url=url,
             platform='instagram',
             video_id=video_id,
             title=f"Instagram Post {video_id}" if video_id else "Instagram Post",
-            # Thumbnail would require scraping, done during full ingestion
+            thumbnail_url=thumbnail_url,
         )
 
     @classmethod
