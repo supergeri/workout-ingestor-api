@@ -294,7 +294,17 @@ Rules:
         """
         reel = InstagramReelService._fetch_reel_data(url)
 
-        shortcode = InstagramReelService._extract_shortcode(url) or reel.get("shortCode", "unknown")
+        # Log raw Apify response at WARNING level for debugging
+        shortcode_for_log = InstagramReelService._extract_shortcode(url) or reel.get("shortCode", "unknown")
+        reel_caption = reel.get("caption", "")
+        reel_transcript = reel.get("transcript", "")
+        reel_duration = reel.get("videoDuration")
+        logger.warning(
+            f"[apify_raw] shortcode={shortcode_for_log} keys={list(reel.keys())} "
+            f"caption={reel_caption!r:.500} transcript={reel_transcript!r:.500} videoDuration={reel_duration}"
+        )
+
+        shortcode = shortcode_for_log
         caption = reel.get("caption", "") or ""
         transcript = reel.get("transcript", "") or ""
         duration = reel.get("videoDuration")
