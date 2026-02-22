@@ -157,6 +157,12 @@ REPS PARSING RULES:
   - "25-30: 200m farmers carry" -> distance_m: 200
   The leading "MM-MM:" numbers must NEVER be used as reps, sets, or distance.
 
+NOTES FOR TIMED STATION FORMAT:
+When the workout is detected as timed-station (caption uses "MM-MM:" format or "in a X minute window"):
+- Set each exercise's "notes" to reflect the time window, e.g. "5 minute cap"
+- Do NOT use "Complete as fast as possible" for timed-station exercises
+- Format: "<N> minute cap" where N is the window duration
+
 Return ONLY a valid JSON object.
 
 STRUCTURE FOR CIRCUIT / ROUNDS BLOCKS (3+ exercises, repeated):
