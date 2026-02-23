@@ -113,6 +113,7 @@ TIMED STATION FORMAT — CHECK AFTER CIRCUIT/Rounds AND BEFORE SUPERSET:
 When the workout uses a timed-station format with "X minute window" or timestamp ranges (e.g. "In a 5 minute window complete:" or "0-5: 1000m Ski"):
 - Set "rounds" to 1 (one pass through all stations)
 - Set "time_cap_sec" on the block to the window duration in seconds (e.g. "5 minute window" = 300 seconds, "10 minute window" = 600 seconds)
+- Set "time_cap_sec" on EACH exercise to the same window duration — every station has its own time cap
 - Each line starts with "MM-MM:" which is a MINUTE timestamp range (e.g. "0-5:" means minutes 0-5) — NEVER use this as reps, sets, or rounds
 - Extract the actual exercise metrics from the text AFTER the colon only
 - DISTANCE RULE: If the metric has an "m" suffix (e.g. "1000m Ski", "80m Burpee", "100m Walking Lunge"), use distance_m — NEVER reps or duration_sec
@@ -128,10 +129,10 @@ Example: "In a 5 minute window complete: 0-5: 1000m Ski, 5-10: 50m Sled Push, 15
   "structure_confidence": 1.0,
   "structure_options": [],
   "exercises": [
-    {{"name": "Ski Erg", "distance_m": 1000, "duration_sec": null, "reps": null, "type": "cardio"}},
-    {{"name": "Sled Push", "distance_m": 50, "duration_sec": null, "reps": null, "type": "strength"}},
-    {{"name": "Burpee Broad Jumps", "distance_m": 80, "duration_sec": null, "reps": null, "type": "strength"}},
-    {{"name": "Wall Balls", "distance_m": null, "duration_sec": null, "reps": 100, "type": "strength"}}
+    {{"name": "Ski Erg", "distance_m": 1000, "duration_sec": null, "reps": null, "time_cap_sec": 300, "type": "cardio"}},
+    {{"name": "Sled Push", "distance_m": 50, "duration_sec": null, "reps": null, "time_cap_sec": 300, "type": "strength"}},
+    {{"name": "Burpee Broad Jumps", "distance_m": 80, "duration_sec": null, "reps": null, "time_cap_sec": 300, "type": "strength"}},
+    {{"name": "Wall Balls", "distance_m": null, "duration_sec": null, "reps": 100, "time_cap_sec": 300, "type": "strength"}}
   ],
   "supersets": []
 }}
