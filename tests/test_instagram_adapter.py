@@ -210,7 +210,7 @@ class TestSidecarHandling:
         )
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
-        mock_response.iter_bytes.return_value = iter([b"fakevideobytes"])
+        mock_response.iter_bytes.side_effect = lambda **kw: iter([b"fakevideobytes"])
         mock_stream_cm = MagicMock()
         mock_stream_cm.__enter__ = MagicMock(return_value=mock_response)
         mock_stream_cm.__exit__ = MagicMock(return_value=False)
@@ -232,9 +232,10 @@ class TestSidecarHandling:
             return_value="some workout text",
         )
         with apify_patch, httpx_patch as mock_httpx, kf_periodic, kf_frames, vision_patch:
-            InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
+            result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
         # httpx.stream should be called exactly 8 times (capped at _MAX_SIDECAR_CLIPS)
         assert mock_httpx.call_count == 8
+        assert result.media_metadata["sidecar_child_count"] == 8
 
     def test_sidecar_vision_failure_falls_back_to_caption(self):
         """If VisionService raises, fall back to caption-only behaviour."""
@@ -268,7 +269,7 @@ class TestSidecarHandling:
             result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
         # Should fall back to caption
         assert result.primary_text == "Full body circuit 4 rounds"
-        assert result.media_metadata.get("had_vision") is not True
+        assert result.media_metadata["had_vision"] is False
 
     def test_sidecar_temp_cleanup_on_vision_failure(self):
         """shutil.rmtree is called even when VisionService raises mid-pipeline."""
@@ -353,3 +354,93 @@ class TestSidecarHandling:
             result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
         # Falls back to caption because childPosts is empty
         assert result.primary_text == "Full body circuit 4 rounds"
+
+    def test_sidecar_vision_returns_empty_string_falls_back_to_caption(self):
+        """When VisionService returns whitespace, adapter falls back to caption-only behaviour."""
+        caption = SIDECAR_REEL["caption"]
+        apify, httpx, kf_periodic, kf_frames, vision = self._patch_stack(vision_text="  ")
+        with apify, httpx, kf_periodic, kf_frames, vision:
+            result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
+        assert result.primary_text == caption
+        assert result.media_metadata.get("had_vision") is not True
+
+    def test_sidecar_partial_clip_download_failure(self):
+        """If first clip download fails, VisionService is still called with frames from successful clips."""
+        apify_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.ApifyService.fetch_reel_data",
+            return_value=SIDECAR_REEL,
+        )
+        # First call raises; subsequent calls succeed
+        successful_response = MagicMock()
+        successful_response.raise_for_status = MagicMock()
+        successful_response.iter_bytes.side_effect = lambda **kw: iter([b"fakevideobytes"])
+        successful_cm = MagicMock()
+        successful_cm.__enter__ = MagicMock(return_value=successful_response)
+        successful_cm.__exit__ = MagicMock(return_value=False)
+
+        call_count = {"n": 0}
+
+        def stream_side_effect(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise httpx.RequestError("connection refused")
+            return successful_cm
+
+        httpx_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.stream",
+            side_effect=stream_side_effect,
+        )
+        kf_periodic = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.KeyframeService.extract_periodic_frames",
+            return_value=[0.0],
+        )
+        kf_frames = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.KeyframeService.extract_frames_at_timestamps",
+            return_value=[("/tmp/frame_00000_0.00s.png", 0.0)],
+        )
+        vision_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.VisionService.extract_text_from_images",
+            return_value="Squat 3x10",
+        )
+        with apify_patch, httpx_patch, kf_periodic, kf_frames, vision_patch as mock_vision:
+            result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
+        # Vision was called despite first clip failing
+        mock_vision.assert_called_once()
+        assert isinstance(result, MediaContent)
+
+    def test_sidecar_caption_none_falls_back_to_creator_title(self):
+        """Sidecar with caption=None uses 'Instagram by @<creator>' as title; no exception raised."""
+        sidecar_no_caption = dict(SIDECAR_REEL)
+        sidecar_no_caption["caption"] = None
+        apify_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.ApifyService.fetch_reel_data",
+            return_value=sidecar_no_caption,
+        )
+        _, _, kf_periodic_base, kf_frames_base, _ = self._patch_stack()
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_bytes.side_effect = lambda **kw: iter([b"fakevideobytes"])
+        mock_stream_cm = MagicMock()
+        mock_stream_cm.__enter__ = MagicMock(return_value=mock_response)
+        mock_stream_cm.__exit__ = MagicMock(return_value=False)
+        httpx_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.stream",
+            return_value=mock_stream_cm,
+        )
+        kf_periodic = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.KeyframeService.extract_periodic_frames",
+            return_value=[0.0],
+        )
+        kf_frames = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.KeyframeService.extract_frames_at_timestamps",
+            return_value=[("/tmp/frame_00000_0.00s.png", 0.0)],
+        )
+        vision_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.VisionService.extract_text_from_images",
+            return_value="Squat 3x10",
+        )
+        creator = sidecar_no_caption["ownerUsername"]
+        with apify_patch, httpx_patch, kf_periodic, kf_frames, vision_patch:
+            result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
+        assert result.title == f"Instagram by @{creator}"
+        assert isinstance(result, MediaContent)
