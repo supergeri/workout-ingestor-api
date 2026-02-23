@@ -28,9 +28,12 @@ _ALLOWED_CDN_HOSTS = frozenset({
 
 
 def _is_allowed_cdn_url(url: str) -> bool:
-    """Check URL is from a known Instagram/Facebook CDN to prevent SSRF."""
+    """Check URL is from a known Instagram/Facebook CDN and uses HTTP(S) to prevent SSRF."""
     try:
-        host = urlparse(url).hostname or ""
+        parsed = urlparse(url)
+        if parsed.scheme not in ("https", "http"):
+            return False
+        host = parsed.hostname or ""
         return any(host == allowed or host.endswith("." + allowed) for allowed in _ALLOWED_CDN_HOSTS)
     except Exception:
         return False
@@ -137,6 +140,10 @@ class InstagramAdapter(PlatformAdapter):
                 # Download the MP4 with per-clip size limit
                 try:
                     download_ok = False
+                    # follow_redirects=True: Instagram CDN URLs occasionally redirect once within
+                    # the same CDN domain. Residual SSRF-via-open-redirect risk is accepted because
+                    # cdninstagram.com and fbcdn.net are not open-redirect servers; a follow-up
+                    # ticket should switch to follow_redirects=False with explicit redirect checking.
                     with httpx.stream("GET", video_url, follow_redirects=True, timeout=30) as response:
                         response.raise_for_status()
                         bytes_written = 0

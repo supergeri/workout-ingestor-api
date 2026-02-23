@@ -137,7 +137,7 @@ class TestSidecarHandling:
         # httpx.stream is a context manager returning a response object
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
-        mock_response.iter_bytes.return_value = iter([b"fakevideobytes"])
+        mock_response.iter_bytes.side_effect = lambda **kw: iter([b"fakevideobytes"])
         mock_stream_cm = MagicMock()
         mock_stream_cm.__enter__ = MagicMock(return_value=mock_response)
         mock_stream_cm.__exit__ = MagicMock(return_value=False)
@@ -472,6 +472,44 @@ class TestSidecarHandling:
         """URLs on unknown hosts are rejected."""
         from workout_ingestor_api.services.adapters.instagram_adapter import _is_allowed_cdn_url
         assert _is_allowed_cdn_url("https://evil.example.com/clip.mp4") is False
+
+    def test_sidecar_non_http_scheme_url_skipped(self):
+        """Non-HTTP scheme URLs should be skipped even if the host is in the allowlist."""
+        reel_with_ftp = {**SIDECAR_REEL, "childPosts": [
+            {"videoUrl": "ftp://cdninstagram.com/video.mp4"},
+            {"videoUrl": f"{_CDN_BASE}/valid.mp4"},
+        ]}
+        apify_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.ApifyService.fetch_reel_data",
+            return_value=reel_with_ftp,
+        )
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_bytes.side_effect = lambda **kw: iter([b"fakevideobytes"])
+        mock_stream_cm = MagicMock()
+        mock_stream_cm.__enter__ = MagicMock(return_value=mock_response)
+        mock_stream_cm.__exit__ = MagicMock(return_value=False)
+        httpx_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.stream",
+            return_value=mock_stream_cm,
+        )
+        kf_periodic = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.KeyframeService.extract_periodic_frames",
+            return_value=[0.0],
+        )
+        kf_frames = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.KeyframeService.extract_frames_at_timestamps",
+            return_value=[("/tmp/frame_00000_0.00s.png", 0.0)],
+        )
+        vision_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.VisionService.extract_text_from_images",
+            return_value="Squat 3x10",
+        )
+        with apify_patch, httpx_patch as mock_httpx, kf_periodic, kf_frames, vision_patch:
+            result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
+        # Only 1 valid URL — httpx.stream should be called once (ftp:// URL is skipped)
+        assert mock_httpx.call_count == 1
+        assert isinstance(result, MediaContent)
 
     def test_clip_size_limit_skips_oversized_clip(self):
         """A clip exceeding _MAX_CLIP_BYTES is skipped and not added to frame processing."""
