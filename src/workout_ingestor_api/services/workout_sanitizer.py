@@ -4,7 +4,15 @@ This module provides a centralized function for fixing common LLM structural
 mistakes in workout data, used by both YouTube and Instagram ingest paths.
 """
 
+import re
 from typing import Dict
+
+# Patterns that indicate the LLM put time-cap info in notes instead of time_cap_sec
+_TIME_CAP_NOTES_RE = re.compile(
+    r"\b\d+\s*(?:minute|min|second|sec)s?\s*(?:cap|window|limit)\b"
+    r"|\btime\s*cap\b",
+    re.IGNORECASE,
+)
 
 
 def sanitize_workout_data(workout_data: Dict) -> Dict:
@@ -15,6 +23,8 @@ def sanitize_workout_data(workout_data: Dict) -> Dict:
     2. If supersets is non-empty and NOT a circuit: set structure to "superset", clear exercises[]
     3. If structure == "superset" but supersets is empty: reset structure to null
     4. Validates blocks is a list and superset entries have exercises
+    5. Propagate time_cap_sec: if block time_cap_sec is null but exercises have it, set from exercises
+    6. Strip time-cap text from exercise notes when time_cap_sec is already set
 
     Args:
         workout_data: Raw workout dict from LLM parsing
@@ -77,4 +87,21 @@ def sanitize_workout_data(workout_data: Dict) -> Dict:
         block for block in blocks
         if block.get("exercises") or block.get("supersets")
     ]
+
+    # Post-pass: fix time_cap_sec propagation and strip redundant notes
+    for block in workout_data["blocks"]:
+        exercises = block.get("exercises") or []
+
+        # If block-level time_cap_sec is missing but exercises have it, propagate up
+        if not block.get("time_cap_sec"):
+            ex_caps = [e.get("time_cap_sec") for e in exercises if e.get("time_cap_sec")]
+            if ex_caps:
+                block["time_cap_sec"] = max(ex_caps)
+
+        # Strip time-cap text from exercise notes when time_cap_sec is set
+        for ex in exercises:
+            if ex.get("time_cap_sec") and ex.get("notes"):
+                cleaned = _TIME_CAP_NOTES_RE.sub("", ex["notes"]).strip(" ,;-")
+                ex["notes"] = cleaned if cleaned else None
+
     return workout_data
