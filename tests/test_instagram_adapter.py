@@ -261,6 +261,41 @@ class TestSidecarHandling:
         assert result.primary_text == "Full body circuit 4 rounds"
         assert result.media_metadata.get("had_vision") is not True
 
+    def test_sidecar_temp_cleanup_on_vision_failure(self):
+        """shutil.rmtree is called even when VisionService raises mid-pipeline."""
+        apify_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.ApifyService.fetch_reel_data",
+            return_value=SIDECAR_REEL,
+        )
+        mock_response = MagicMock()
+        mock_response.content = b"fakevideobytes"
+        mock_response.raise_for_status = MagicMock()
+        httpx_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.get",
+            return_value=mock_response,
+        )
+        kf_periodic = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.KeyframeService.extract_periodic_frames",
+            return_value=[0.0],
+        )
+        kf_frames = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.KeyframeService.extract_frames_at_timestamps",
+            return_value=[("/tmp/frame_00000_0.00s.png", 0.0)],
+        )
+        vision_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.VisionService.extract_text_from_images",
+            side_effect=RuntimeError("Vision API unavailable"),
+        )
+        rmtree_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.shutil.rmtree",
+        )
+        with apify_patch, httpx_patch, kf_periodic, kf_frames, vision_patch, rmtree_patch as mock_rmtree:
+            result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
+        # Cleanup must run even though vision raised
+        mock_rmtree.assert_called_once()
+        # Fallback to caption because vision failed
+        assert result.primary_text == "Full body circuit 4 rounds"
+
     def test_sidecar_child_posts_without_video_url_are_skipped(self):
         """Child posts without a videoUrl are skipped gracefully."""
         apify_patch = patch(
