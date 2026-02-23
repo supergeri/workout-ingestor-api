@@ -7,8 +7,24 @@ on:
     branches: [main]
 
 jobs:
+  conflict-markers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for merge conflict markers
+        run: |
+          # Scan for git merge conflict markers in code files
+          # Exit with error code 1 if any markers are found
+          if grep -rE '^<<<<<<< |^=======$|^>>>>>>> ' --include="*.py" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.yml" --include="*.yaml" --include="*.json" . > /dev/null 2>&1; then
+            echo "ERROR: Found merge conflict markers in the following files:"
+            grep -rE '^<<<<<<< |^=======$|^>>>>>>> ' --include="*.py" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.yml" --include="*.yaml" --include="*.json" . || true
+            exit 1
+          fi
+
   test:
     runs-on: ubuntu-latest
+    needs: conflict-markers
 
     steps:
       - uses: actions/checkout@v4
