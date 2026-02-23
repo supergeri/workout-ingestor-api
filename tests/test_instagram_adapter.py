@@ -1,5 +1,3 @@
-import os
-import tempfile
 from unittest.mock import MagicMock, patch, call
 import pytest
 from workout_ingestor_api.services.adapters.instagram_adapter import InstagramAdapter
@@ -97,6 +95,9 @@ def test_secondary_texts_empty_when_caption_is_whitespace_only():
 # Sidecar (carousel) tests — AMA-742
 # ---------------------------------------------------------------------------
 
+# Use a known CDN hostname so the SSRF CDN check passes
+_CDN_BASE = "https://scontent.cdninstagram.com"
+
 SIDECAR_REEL = {
     "type": "Sidecar",
     "caption": "Full body circuit 4 rounds",
@@ -105,9 +106,9 @@ SIDECAR_REEL = {
     "ownerUsername": "coach_sidecar",
     "shortCode": "SC1234",
     "childPosts": [
-        {"videoUrl": "https://example.com/clip1.mp4"},
-        {"videoUrl": "https://example.com/clip2.mp4"},
-        {"videoUrl": "https://example.com/clip3.mp4"},
+        {"videoUrl": f"{_CDN_BASE}/clip1.mp4"},
+        {"videoUrl": f"{_CDN_BASE}/clip2.mp4"},
+        {"videoUrl": f"{_CDN_BASE}/clip3.mp4"},
     ],
 }
 
@@ -119,19 +120,9 @@ SIDECAR_REEL_NO_VIDEO_URL = {
     "ownerUsername": "coach_x",
     "shortCode": "SC_NOVID",
     "childPosts": [
-        {"imageUrl": "https://example.com/img1.jpg"},
+        {"imageUrl": f"{_CDN_BASE}/img1.jpg"},
     ],
 }
-
-
-def _make_frame_tuples(tmpdir: str, names: list[str]) -> list[tuple[str, float]]:
-    """Create real (empty) PNG files in tmpdir and return (path, ts) tuples."""
-    result = []
-    for i, name in enumerate(names):
-        path = os.path.join(tmpdir, name)
-        open(path, "wb").close()
-        result.append((path, float(i)))
-    return result
 
 
 class TestSidecarHandling:
@@ -192,17 +183,18 @@ class TestSidecarHandling:
         assert result.media_metadata.get("had_vision") is True
 
     def test_sidecar_child_post_count_in_metadata(self):
-        """sidecar_child_count is set in media_metadata."""
+        """sidecar_video_clip_count and sidecar_total_child_count are set in media_metadata."""
         apify, httpx, kf_periodic, kf_frames, vision = self._patch_stack()
         with apify, httpx, kf_periodic, kf_frames, vision:
             result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
-        assert result.media_metadata.get("sidecar_child_count") == 3
+        assert result.media_metadata.get("sidecar_video_clip_count") == 3
+        assert result.media_metadata.get("sidecar_total_child_count") == 3
 
     def test_sidecar_max_8_child_posts(self):
         """At most 8 child posts are processed even if more are present."""
         reel_with_many = dict(SIDECAR_REEL)
         reel_with_many["childPosts"] = [
-            {"videoUrl": f"https://example.com/clip{i}.mp4"} for i in range(12)
+            {"videoUrl": f"{_CDN_BASE}/clip{i}.mp4"} for i in range(12)
         ]
         apify_patch = patch(
             "workout_ingestor_api.services.adapters.instagram_adapter.ApifyService.fetch_reel_data",
@@ -235,7 +227,8 @@ class TestSidecarHandling:
             result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
         # httpx.stream should be called exactly 8 times (capped at _MAX_SIDECAR_CLIPS)
         assert mock_httpx.call_count == 8
-        assert result.media_metadata["sidecar_child_count"] == 8
+        assert result.media_metadata["sidecar_video_clip_count"] == 8
+        assert result.media_metadata["sidecar_total_child_count"] == 12
 
     def test_sidecar_vision_failure_falls_back_to_caption(self):
         """If VisionService raises, fall back to caption-only behaviour."""
@@ -444,3 +437,71 @@ class TestSidecarHandling:
             result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
         assert result.title == f"Instagram by @{creator}"
         assert isinstance(result, MediaContent)
+
+    def test_cdn_url_validation_skips_non_cdn_clips(self):
+        """Clips with non-CDN URLs are skipped (SSRF mitigation)."""
+        reel_with_bad_url = dict(SIDECAR_REEL)
+        reel_with_bad_url = {**SIDECAR_REEL, "childPosts": [
+            {"videoUrl": "https://evil.example.com/clip.mp4"},
+        ]}
+        apify_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.ApifyService.fetch_reel_data",
+            return_value=reel_with_bad_url,
+        )
+        httpx_spy = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.stream",
+        )
+        with apify_patch, httpx_spy as mock_httpx:
+            # No video frames => falls back to caption
+            result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
+        # httpx.stream must never be called for non-CDN URLs
+        mock_httpx.assert_not_called()
+        assert result.primary_text == "Full body circuit 4 rounds"
+
+    def test_cdn_url_validation_allows_cdninstagram(self):
+        """URLs on *.cdninstagram.com pass the CDN check."""
+        from workout_ingestor_api.services.adapters.instagram_adapter import _is_allowed_cdn_url
+        assert _is_allowed_cdn_url("https://scontent.cdninstagram.com/v/clip.mp4") is True
+
+    def test_cdn_url_validation_allows_fbcdn(self):
+        """URLs on *.fbcdn.net pass the CDN check."""
+        from workout_ingestor_api.services.adapters.instagram_adapter import _is_allowed_cdn_url
+        assert _is_allowed_cdn_url("https://video.fbcdn.net/v/clip.mp4") is True
+
+    def test_cdn_url_validation_blocks_unknown_host(self):
+        """URLs on unknown hosts are rejected."""
+        from workout_ingestor_api.services.adapters.instagram_adapter import _is_allowed_cdn_url
+        assert _is_allowed_cdn_url("https://evil.example.com/clip.mp4") is False
+
+    def test_clip_size_limit_skips_oversized_clip(self):
+        """A clip exceeding _MAX_CLIP_BYTES is skipped and not added to frame processing."""
+        import workout_ingestor_api.services.adapters.instagram_adapter as mod
+
+        reel_one_clip = {**SIDECAR_REEL, "childPosts": [
+            {"videoUrl": f"{_CDN_BASE}/big_clip.mp4"},
+        ]}
+        apify_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.ApifyService.fetch_reel_data",
+            return_value=reel_one_clip,
+        )
+        # Return a single chunk that is larger than the limit
+        oversized_chunk = b"x" * (mod._MAX_CLIP_BYTES + 1)
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_bytes.return_value = iter([oversized_chunk])
+        mock_stream_cm = MagicMock()
+        mock_stream_cm.__enter__ = MagicMock(return_value=mock_response)
+        mock_stream_cm.__exit__ = MagicMock(return_value=False)
+        httpx_patch = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.stream",
+            return_value=mock_stream_cm,
+        )
+        kf_spy = patch(
+            "workout_ingestor_api.services.adapters.instagram_adapter.KeyframeService.extract_periodic_frames",
+        )
+        with apify_patch, httpx_patch, kf_spy as mock_kf:
+            # No frames => falls back to caption
+            result = InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
+        # KeyframeService must NOT be called because the clip was skipped
+        mock_kf.assert_not_called()
+        assert result.primary_text == "Full body circuit 4 rounds"
