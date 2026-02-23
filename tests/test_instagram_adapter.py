@@ -143,13 +143,16 @@ class TestSidecarHandling:
             "workout_ingestor_api.services.adapters.instagram_adapter.ApifyService.fetch_reel_data",
             return_value=SIDECAR_REEL,
         )
-        # httpx.get returns a response object with .content
+        # httpx.stream is a context manager returning a response object
         mock_response = MagicMock()
-        mock_response.content = b"fakevideobytes"
         mock_response.raise_for_status = MagicMock()
+        mock_response.iter_bytes.return_value = iter([b"fakevideobytes"])
+        mock_stream_cm = MagicMock()
+        mock_stream_cm.__enter__ = MagicMock(return_value=mock_response)
+        mock_stream_cm.__exit__ = MagicMock(return_value=False)
         httpx_patch = patch(
-            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.get",
-            return_value=mock_response,
+            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.stream",
+            return_value=mock_stream_cm,
         )
         # KeyframeService returns list of (path, ts) tuples
         fake_frames = [("/tmp/frame_00000_0.00s.png", 0.0), ("/tmp/frame_00001_2.00s.png", 2.0)]
@@ -206,11 +209,14 @@ class TestSidecarHandling:
             return_value=reel_with_many,
         )
         mock_response = MagicMock()
-        mock_response.content = b"fakevideobytes"
         mock_response.raise_for_status = MagicMock()
+        mock_response.iter_bytes.return_value = iter([b"fakevideobytes"])
+        mock_stream_cm = MagicMock()
+        mock_stream_cm.__enter__ = MagicMock(return_value=mock_response)
+        mock_stream_cm.__exit__ = MagicMock(return_value=False)
         httpx_patch = patch(
-            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.get",
-            return_value=mock_response,
+            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.stream",
+            return_value=mock_stream_cm,
         )
         kf_periodic = patch(
             "workout_ingestor_api.services.adapters.instagram_adapter.KeyframeService.extract_periodic_frames",
@@ -227,8 +233,8 @@ class TestSidecarHandling:
         )
         with apify_patch, httpx_patch as mock_httpx, kf_periodic, kf_frames, vision_patch:
             InstagramAdapter().fetch("https://instagram.com/p/SC1234/", "SC1234")
-        # httpx.get should be called at most 8 times
-        assert mock_httpx.call_count <= 8
+        # httpx.stream should be called exactly 8 times (capped at _MAX_SIDECAR_CLIPS)
+        assert mock_httpx.call_count == 8
 
     def test_sidecar_vision_failure_falls_back_to_caption(self):
         """If VisionService raises, fall back to caption-only behaviour."""
@@ -237,11 +243,14 @@ class TestSidecarHandling:
             return_value=SIDECAR_REEL,
         )
         mock_response = MagicMock()
-        mock_response.content = b"fakevideobytes"
         mock_response.raise_for_status = MagicMock()
+        mock_response.iter_bytes.return_value = iter([b"fakevideobytes"])
+        mock_stream_cm = MagicMock()
+        mock_stream_cm.__enter__ = MagicMock(return_value=mock_response)
+        mock_stream_cm.__exit__ = MagicMock(return_value=False)
         httpx_patch = patch(
-            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.get",
-            return_value=mock_response,
+            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.stream",
+            return_value=mock_stream_cm,
         )
         kf_periodic = patch(
             "workout_ingestor_api.services.adapters.instagram_adapter.KeyframeService.extract_periodic_frames",
@@ -268,11 +277,14 @@ class TestSidecarHandling:
             return_value=SIDECAR_REEL,
         )
         mock_response = MagicMock()
-        mock_response.content = b"fakevideobytes"
         mock_response.raise_for_status = MagicMock()
+        mock_response.iter_bytes.return_value = iter([b"fakevideobytes"])
+        mock_stream_cm = MagicMock()
+        mock_stream_cm.__enter__ = MagicMock(return_value=mock_response)
+        mock_stream_cm.__exit__ = MagicMock(return_value=False)
         httpx_patch = patch(
-            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.get",
-            return_value=mock_response,
+            "workout_ingestor_api.services.adapters.instagram_adapter.httpx.stream",
+            return_value=mock_stream_cm,
         )
         kf_periodic = patch(
             "workout_ingestor_api.services.adapters.instagram_adapter.KeyframeService.extract_periodic_frames",

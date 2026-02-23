@@ -59,7 +59,7 @@ class InstagramAdapter(PlatformAdapter):
                         "shortcode": source_id,
                         "had_transcript": False,
                         "had_vision": True,
-                        "sidecar_child_count": len(child_posts),
+                        "sidecar_child_count": len(video_children),
                     },
                 )
             # VisionService failed — log already done inside helper; fall through
@@ -85,6 +85,7 @@ class InstagramAdapter(PlatformAdapter):
                 "creator": creator,
                 "shortcode": source_id,
                 "had_transcript": bool(transcript.strip()),
+                "had_vision": False,
             },
         )
 
@@ -109,10 +110,11 @@ class InstagramAdapter(PlatformAdapter):
 
                 # Download the MP4
                 try:
-                    response = httpx.get(video_url, follow_redirects=True, timeout=30)
-                    response.raise_for_status()
-                    with open(clip_path, "wb") as fh:
-                        fh.write(response.content)
+                    with httpx.stream("GET", video_url, follow_redirects=True, timeout=30) as response:
+                        response.raise_for_status()
+                        with open(clip_path, "wb") as fh:
+                            for chunk in response.iter_bytes(chunk_size=1 << 20):
+                                fh.write(chunk)
                 except Exception as exc:
                     logger.warning("Failed to download clip %d (%s): %s", idx, video_url, exc)
                     continue
